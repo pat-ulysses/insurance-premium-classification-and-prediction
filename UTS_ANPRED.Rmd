@@ -1,0 +1,1683 @@
+---
+title: "UTS Analisis Prediktif"
+author: "Kelompok 1"
+date: "2025-04-26"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Load Libraries
+
+```{r include=FALSE}
+library(leaps)
+library(glmnet)
+library(performance)
+library(see)
+library(car)
+library(MASS)
+library(lmtest)
+library(gplots)
+library(randomForest)
+library(gbm)
+library(caret)
+library(pROC)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(rpart)
+library(rpart.plot)
+```
+
+# Soal 1 - Analisis Data Eksplorasi
+
+```{r include=FALSE}
+data <- read.csv("data-UTS.csv",sep=';')
+attach(data)
+```
+
+*Dataset* yang digunakan dalam laporan ini berisi karakteristik dan beberapa nilai historis dalam kepemilikan asuransi sebelumnya dari 10.000 pemegang polis terdahulu dari PT. Asuransi Pikagon Chandra. *Dataset* ini terdiri dari 27 variabel, dengan variabel *output*nya adalah Premium_Amount, 8 variabel numerik (Age, Claims_Frequency, Claims_Adjustment, Time_Since_First_Contact, Website_Visits, Inquiries, Time_to_Conversion, Credit_Score), dan 18 variabel kategorik (Is_Senior, Marital_Status, Married_Premium_Discount, Prior_Insurance, Prior_Insurance_Premium_Adjustment, Claims_Severity, Policy_Type, Policy_Adjustment, Safe_Driver_Discount, Multi_Policy_Discount, Bundling_Discount, Total_Discounts, Source_of_Lead, Conversion_Status, Quotes_Requested, Premium_Adjustment_Credit, Region, Premium_Adjustment_Region)
+
+Pertama-tama, bentuk histogram dari variabel *output*, yaitu Premium_Amount. Perhatikan gambar di bawah ini.
+
+```{r}
+#histogram output
+hist(data$Premium_Amount, 
+     main = "Histogram of Premium Amount",
+     xlab = "Premium Amount",
+     col = "skyblue",
+     border = "white")
+```
+
+Histogram dari Premium_Amount berbentuk simetris mendekati bentuk *bell shape*, tetapi agak menceng ke kanan. Sebagian besar data terkonsentrasi pada angka 2200 hingga 2300. Variabel Premium_Amount memiliki bentuk yang cukup mendekati distribusi normal. Artinya, estimasi nilai dari variabel Premium_Amount kemungkinan akan cocok dengan model regresi linear, yang memiliki asumsi normalitas (residualnya berdistribusi normal). Namun karena terdapat kemencengan, sebaiknya lakukan transformasi data agar model regresi dapat diperbaik. Opsi kedua dapat pula menggunakan model GLM (*Generalized Linear Model*) dengan distribusi Gamma.
+
+Berikut merupakan gambar *boxplot* dari variabel Premium_Amount.
+
+```{r}
+#boxplot Premium_Amount
+boxplot(data$Premium_Amount,
+        main = "Boxplot of Premium Amount",
+        ylab = "Premium Amount",
+        col = "lightblue",
+        border = "darkblue")
+```
+
+Kisaran harga premi berada di antara 1800 hingga 2936 dan sebagian besar harga premi berkisar di antara 2100 hingga 2336, dengan rata-rata harga premi adalah 2220 dan nilai tengahnya adalah 2236.
+
+Selanjutnya, variabel Premium_Amount akan diklasifikasi berdasarkan besar preminya. Jika besar premi kurang dari 2000 akan diklasifikan sebagai "*low*" dan jika besar premi lebih besar dari 2000 akan diklasifikasikan sebagai "*high*".
+
+```{r}
+#Ubah Premium_Amount jadi kategorik 
+Premium_Class <- cut(Premium_Amount, breaks = c(0,2000,3000), labels =c("Low","High"))
+boxplot(Premium_Adjustment_Region ~ Premium_Class)
+```
+
+Akan diperiksa hubungan antara variabel numerik dengan variabel numerik lainnya dengan menggunakan koefisien korelasi. Perhatikan *heatmap* pada gambar di bawah.
+
+```{r}
+#periksa hubungan antar variabel numerik (koefisien korelasi)
+data_numeric_manual <- data[, c("Age", 
+                                "Claims_Frequency", 
+                                "Claims_Adjustment", 
+                                "Time_Since_First_Contact", 
+                                "Website_Visits", 
+                                "Inquiries", 
+                                "Time_to_Conversion", 
+                                "Credit_Score",
+                                "Premium_Amount")]
+pairs(data_numeric_manual)
+
+cor_matrix <- cor(data_numeric_manual, use = "complete.obs")
+print(cor_matrix)
+```
+
+```{r fig.height=10, fig.width=15}
+heatmap.2(cor_matrix,
+          main = "Heatmap Korelasi Variabel Numerik",
+          col = colorRampPalette(c("blue", "white", "red"))(20),
+          symm = TRUE,
+          trace = "none",
+          density.info = "none",
+          key.xlab = "Koefisien Korelasi",
+          key.ylab = NULL,
+          keysize = 1,
+          margins = c(15, 15), # Tingkatkan nilai margin
+          cexRow = 0.7,
+          cexCol = 0.7,
+          Rowv = FALSE,
+          Colv = FALSE,
+          cellnote = round(cor_matrix, 2),
+          notecol = "black",
+          notecex = 0.7)
+```
+
+*Heatmap* di atas menyatakan korelasi antar variabel numerik. Dari *heatmap* ini, terlihat bahwa variabel-variabel yang memiliki korelasi kuat (nilai lebih dari 0,5) adalah variabel Claims_Frequency dan Claims_Adjustment (dengan korelasi sebesar 0,8). Kedua variabel ini berhubungan secara positif. Semakin tinggi frekuensi klaim yang diajukan seseorang, maka semakin mahal premi yang harus dibayar orang tersebut. Artinya, kedua variabel ini saling berhubungan dan mempengaruhi nilai satu sama lain (secara positif jika nilainya lebih besar dari 0 dan secara negatif jika nilainya kurang dari 0). Dari *heatmap* ini, dapat disimpulkan bahwa sebagian variabel numerik saling tidak mempengaruhi satu sama lain, serta *output* (Premium_Amount) tidak berkorelasi kuat oleh variabel numerik tertentu. *Output* hanya berkorelasi sedang dengan skor kredit (korelasi negatif), Claim_Adjustment (korelasi positif), dan Claim_Frequency (korelasi positif).
+
+Selanjutnya, akan dianalisis hubungan antara variabel kategorik dengan variabel kategorik lainnya dengan menggunakan *interaction plot*. Berikut akan diberikan beberapa gambar *interaction plot* dari beberapa variabel kategorik, yaitu
+
+-   Is_Senior dan Source_of_Lead
+
+-   Is_Senior dan Quotes_Requested
+
+-   Marital_Status dan Source_of_Lead
+
+-   Marital_Status dan Quotes_Requested
+
+-   Married_Premium_Discount dan Source_of_Lead
+
+-   Married_Premium_Discount dan Quotes_Requested
+
+-   Prior_Insurance dan Source_of_Lead
+
+-   Prior_Insurance dan Quotes_Requested
+
+-   Prior_Insurance_Premium_Adjustment dan Source_of_Lead
+
+-   Prior_Insurance_Premium_Adjustment dan Quotes_Requested
+
+-   Claims_Severity dan Source_of_Lead
+
+-   Claims_Severity dan Quotes_Requested
+
+-   Policy_Type dan Source_of_Lead
+
+-   Policy_Adjustment dan Source_of_Lead
+
+-   Safe_Driver_Discount dan Source_of_Lead
+
+-   Multi_Policy_Discount dan Quotes_Requested
+
+-   Bundling_Discount dan Quotes_Requested
+
+-   Total_Discounts dan Source_of_Lead
+
+-   Total_Discounts dan Quotes_Requested
+
+-   Source_of_Lead dan Quotes_Requested
+
+-   Conversion_Status dan Quotes_Requested
+
+```{r}
+#Periksa hubungan antar variabel kategorik
+par(mfrow=c(2,2))
+
+interaction.plot(Is_Senior, Source_of_Lead, Premium_Amount, xlab = "Is_Senior", ylab = "Premium_Amount", col=c("red","blue","green"),lty=c(1,2,3),pch=3,legend = F)
+legend("topleft",inset = .05, c("0","1","2"),col=c("red","blue","green","black"),lty=c(1,2,3,4),pch=4, title="Source_of_Lead", cex = 0.5)
+interaction.plot(Is_Senior, Quotes_Requested, Premium_Amount, xlab = "Is_Senior", ylab = "Premium_Amount", col=c("red","blue","green"),lty=c(1,2,3),pch=3,legend = F)
+legend("topleft",inset = .05, c("0","1","2"),col=c("red","blue","green","black"),lty=c(1,2,3,4),pch=4, title="Quotes_Requested", cex = 0.5)
+interaction.plot(Marital_Status, Source_of_Lead, Premium_Amount, xlab = "Marital_Status", ylab = "Premium_Amount", col=c("red","blue","green"),lty=c(1,2,3),pch=3,legend = F)
+legend("topleft",inset = .05, c("0","1","2"),col=c("red","blue","green","black"),lty=c(1,2,3,4),pch=4, title="Source_of_Lead", cex = 0.5)
+interaction.plot(Marital_Status, Quotes_Requested, Premium_Amount, xlab = "Marital_Status", ylab = "Premium_Amount", col=c("red","blue","green"),lty=c(1,2,3),pch=3,legend = F)
+legend("topleft",inset = .05, c("0","1","2"),col=c("red","blue","green","black"),lty=c(1,2,3,4),pch=4, title="Quotes_Requested", cex = 0.5)
+interaction.plot(Married_Premium_Discount, Source_of_Lead, Premium_Amount, xlab = "Married_Premium_Discount", ylab = "Premium_Amount", col=c("red","blue","green"),lty=c(1,2,3),pch=3,legend = F)
+legend("topleft",inset = .05, c("0","1","2"),col=c("red","blue","green","black"),lty=c(1,2,3,4),pch=4, title="Source_of_Lead", cex = 0.5)
+interaction.plot(Married_Premium_Discount, Quotes_Requested, Premium_Amount, xlab = "Married_Premium_Discount", ylab = "Premium_Amount", col=c("red","blue","green"),lty=c(1,2,3),pch=3,legend = F)
+legend("topleft",inset = .05, c("0","1","2"),col=c("red","blue","green","black"),lty=c(1,2,3,4),pch=4, title="Quotes_Requested", cex = 0.5)
+interaction.plot(Prior_Insurance, Source_of_Lead, Premium_Amount, xlab = "Prior_Insurance", ylab = "Premium_Amount", col=c("red","blue","green"),lty=c(1,2,3),pch=3,legend = F)
+legend("topleft",inset = .05, c("0","1","2"),col=c("red","blue","green","black"),lty=c(1,2,3,4),pch=4, title="Source_of_Lead", cex = 0.5)
+interaction.plot(Prior_Insurance, Quotes_Requested, Premium_Amount, xlab = "Prior_Insurance", ylab = "Premium_Amount", col=c("red","blue","green"),lty=c(1,2,3),pch=3,legend = F)
+legend("topleft",inset = .05, c("0","1","2"),col=c("red","blue","green","black"),lty=c(1,2,3,4),pch=4, title="Quotes_Requested", cex = 0.5)
+interaction.plot(Prior_Insurance_Premium_Adjustment, Source_of_Lead, Premium_Amount, xlab = "Prior_Insurance_Premium_Adjustment", ylab = "Premium_Amount", col=c("red","blue","green"),lty=c(1,2,3),pch=3,legend = F)
+legend("topleft",inset = .05, c("0","1","2"),col=c("red","blue","green","black"),lty=c(1,2,3,4),pch=4, title="Source_of_Lead", cex = 0.5)
+interaction.plot(Prior_Insurance_Premium_Adjustment, Quotes_Requested, Premium_Amount, xlab = "Prior_Insurance_Premium_Adjustment", ylab = "Premium_Amount", col=c("red","blue","green"),lty=c(1,2,3),pch=3,legend = F)
+legend("topleft",inset = .05, c("0","1","2"),col=c("red","blue","green","black"),lty=c(1,2,3,4),pch=4, title="Quotes_Requested", cex = 0.5)
+interaction.plot(Claims_Severity, Source_of_Lead, Premium_Amount, xlab = "Claims_Severity", ylab = "Premium_Amount", col=c("red","blue","green"),lty=c(1,2,3),pch=3,legend = F)
+legend("topleft",inset = .05, c("0","1","2"),col=c("red","blue","green","black"),lty=c(1,2,3,4),pch=4, title="Source_of_Lead", cex = 0.5)
+interaction.plot(Claims_Severity, Quotes_Requested, Premium_Amount, xlab = "Claims_Severity", ylab = "Premium_Amount", col=c("red","blue","green"),lty=c(1,2,3),pch=3,legend = F)
+legend("topleft",inset = .05, c("0","1","2"),col=c("red","blue","green","black"),lty=c(1,2,3,4),pch=4, title="Quotes_Requested", cex = 0.5)
+interaction.plot(Policy_Type, Source_of_Lead, Premium_Amount, xlab = "Policy_Type", ylab = "Premium_Amount", col=c("red","blue","green"),lty=c(1,2,3),pch=3,legend = F)
+legend("topleft",inset = .05, c("0","1","2"),col=c("red","blue","green","black"),lty=c(1,2,3,4),pch=4, title="Source_of_Lead", cex = 0.5)
+interaction.plot(Policy_Adjustment, Source_of_Lead, Premium_Amount, xlab = "Policy_Adjustment", ylab = "Premium_Amount", col=c("red","blue","green"),lty=c(1,2,3),pch=3,legend = F)
+legend("topleft",inset = .05, c("0","1","2"),col=c("red","blue","green","black"),lty=c(1,2,3,4),pch=4, title="Source_of_Lead", cex = 0.5)
+interaction.plot(Safe_Driver_Discount, Source_of_Lead, Premium_Amount, xlab = "Safe_Driver_Discount", ylab = "Premium_Amount", col=c("red","blue","green"),lty=c(1,2,3),pch=3,legend = F)
+legend("topleft",inset = .05, c("0","1","2"),col=c("red","blue","green","black"),lty=c(1,2,3,4),pch=4, title="Source_of_Lead", cex = 0.5)
+interaction.plot(Multi_Policy_Discount, Quotes_Requested, Premium_Amount, xlab = "Multi_Policy_Discount", ylab = "Premium_Amount", col=c("red","blue","green"),lty=c(1,2,3),pch=3,legend = F)
+legend("topleft",inset = .05, c("0","1","2"),col=c("red","blue","green","black"),lty=c(1,2,3,4),pch=4, title="Quotes_Requested", cex = 0.5)
+interaction.plot(Bundling_Discount, Quotes_Requested, Premium_Amount, xlab = "Bundling_Discount", ylab = "Premium_Amount", col=c("red","blue","green"),lty=c(1,2,3),pch=3,legend = F)
+legend("topleft",inset = .05, c("0","1","2"),col=c("red","blue","green","black"),lty=c(1,2,3,4),pch=4, title="Quotes_Requested", cex = 0.5)
+interaction.plot(Total_Discounts, Source_of_Lead, Premium_Amount, xlab = "Total_Discounts", ylab = "Premium_Amount", col=c("red","blue","green"),lty=c(1,2,3),pch=3,legend = F)
+legend("topleft",inset = .05, c("0","1","2"),col=c("red","blue","green","black"),lty=c(1,2,3,4),pch=4, title="Source_of_Lead", cex = 0.5)
+interaction.plot(Total_Discounts, Quotes_Requested, Premium_Amount, xlab = "Total_Discounts", ylab = "Premium_Amount", col=c("red","blue","green"),lty=c(1,2,3),pch=3,legend = F)
+legend("topleft",inset = .05, c("0","1","2"),col=c("red","blue","green","black"),lty=c(1,2,3,4),pch=4, title="Quotes_Requested", cex = 0.5)
+interaction.plot(Source_of_Lead, Quotes_Requested, Premium_Amount, xlab = "Source_of_Lead", ylab = "Premium_Amount", col=c("red","blue","green"),lty=c(1,2,3),pch=3,legend = F)
+legend("topleft",inset = .05, c("0","1","2"),col=c("red","blue","green","black"),lty=c(1,2,3,4),pch=4, title="Quotes_Requested", cex = 0.5)
+interaction.plot(Conversion_Status, Quotes_Requested, Premium_Amount, xlab = "Conversion_Status", ylab = "Premium_Amount", col=c("red","blue","green"),lty=c(1,2,3),pch=3,legend = F)
+legend("topleft",inset = .05, c("0","1","2"),col=c("red","blue","green","black"),lty=c(1,2,3,4),pch=4, title="Quotes_Requested", cex = 0.5)
+```
+
+Dari gambar di atas, berikut beberapa variabel kategorik yang saling berhubungan
+
+-   Is_Senior dan Source_of_Lead
+
+-   Is_Senior dan Quotes_Requested
+
+-   Marital_Status dan Source_of_Lead
+
+-   Marital_Status dan Quotes_Requested
+
+-   Married_Premium_Discount dan Source_of_Lead
+
+-   Married_Premium_Discount dan Quotes_Requested
+
+-   Prior_Insurance dan Source_of_Lead
+
+-   Prior_Insurance dan Quotes_Requested
+
+-   Prior_Insurance_Premium_Adjustment dan Source_of_Lead
+
+-   Prior_Insurance_Premium_Adjustment dan Quotes_Requested
+
+-   Claims_Severity dan Source_of_Lead
+
+-   Claims_Severity dan Quotes_Requested
+
+-   Policy_Type dan Source_of_Lead
+
+-   Policy_Adjustment dan Source_of_Lead
+
+-   Safe_Driver_Discount dan Source_of_Lead
+
+-   Multi_Policy_Discount dan Quotes_Requested
+
+-   Bundling_Discount dan Quotes_Requested
+
+-   Total_Discounts dan Source_of_Lead
+
+-   Total_Discounts dan Quotes_Requested
+
+-   Source_of_Lead dan Quotes_Requested
+
+-   Conversion_Status dan Quotes_Requested
+
+Selanjutnya, akan dianalisis hubungan antara suatu variabel kategorik dengan *output* Premium_Amount dengan menggunakan metode ANOVA.
+
+```{r}
+#periksa hubungan output dgn variabel kategorik (anova)
+boxplot(Premium_Amount ~ Marital_Status)
+anova2 <- aov(Premium_Amount ~ Marital_Status)
+summary(anova2)
+
+boxplot(Premium_Amount ~ Married_Premium_Discount)
+anova3 <- aov(Premium_Amount ~ Married_Premium_Discount)
+summary(anova3)
+
+boxplot(Premium_Amount ~ Prior_Insurance)
+anova4 <- aov(Premium_Amount ~ Prior_Insurance)
+summary(anova4)
+
+boxplot(Premium_Amount ~ Prior_Insurance_Premium_Adjustment)
+anova5 <- aov(Premium_Amount ~ Prior_Insurance_Premium_Adjustment)
+summary(anova5)
+
+boxplot(Premium_Amount ~ Claims_Severity)
+anova6 <- aov(Premium_Amount ~ Claims_Severity)
+summary(anova6)
+
+boxplot(Premium_Amount ~ Policy_Type)
+anova7 <- aov(Premium_Amount ~ Policy_Type)
+summary(anova7)
+
+boxplot(Premium_Amount ~ Policy_Adjustment)
+anova8 <- aov(Premium_Amount ~ Policy_Adjustment)
+summary(anova8)
+
+boxplot(Premium_Amount ~ Safe_Driver_Discount)
+anova9 <- aov(Premium_Amount ~ Safe_Driver_Discount)
+summary(anova9)
+
+boxplot(Premium_Amount ~ Multi_Policy_Discount)
+anova10 <- aov(Premium_Amount ~ Multi_Policy_Discount)
+summary(anova10)
+
+boxplot(Premium_Amount ~ Bundling_Discount)
+anova11 <- aov(Premium_Amount ~ Bundling_Discount)
+summary(anova11)
+
+boxplot(Premium_Amount ~ Total_Discounts)
+anova12 <- aov(Premium_Amount ~ Total_Discounts)
+summary(anova12)
+
+boxplot(Premium_Amount ~ Conversion_Status)
+anova14 <- aov(Premium_Amount ~ Conversion_Status)
+summary(anova14)
+
+boxplot(Premium_Amount ~ Premium_Adjustment_Credit)
+anova16 <- aov(Premium_Amount ~ Premium_Adjustment_Credit)
+summary(anova16)
+
+boxplot(Premium_Amount ~ Region)
+anova17 <- aov(Premium_Amount ~ Region)
+summary(anova17)
+
+boxplot(Premium_Amount ~ Premium_Adjustment_Region)
+anova18 <- aov(Premium_Amount ~ Premium_Adjustment_Region)
+summary(anova18)
+
+```
+
+Dari sini, diperoleh beberapa variabel yang saling berhubungan adalah
+
+-   Premium_Amount dan Marital_Status
+
+    Pelanggan yang sudah menikah mendapat rata-rata harga premi yang paling tinggi, sementara untuk pelanggan yang sudah bercerai, masih single, atau janda memiliki rata-rata harga premi yang lebih rendah, dengan harga yang kurang lebih sama. Artinya, pelanggan yang hidup dengan pasangan umumnya harus membayar premi yang lebih mahal.
+
+-   Premium_Amount dan Married_Premium_Discount
+
+    Variabel Married_Premium_Discount akan memberikan pelanggan yang sudah menikah tambahan sebesar 86 pada premi. Penambahan premi tentunya akan total premi menjadi lebih banyak.
+
+-   Premium_Amount dan Prior_Insurance
+
+    Pelanggan yang sebelumnya memliki asuransi selama kurang dari 1 tahun akan membayar premi lebih mahal daripada yang sebelumnya memiliki asuransi selama 1-5 tahun atau lebih dari 5 tahun.
+
+-   Premium_Amount dan Prior_Insurance_Premium_Adjustment
+
+    Variabel Prior_Insurance_Premium_Adjustment akan memberikan tambahan premi sebesar 50 jika pelanggan memiliki asuransi sebelumnya selama 1-5 tahun dan memberi tambahan premi sebesar 100 jika pelanggan memiliki asuransi sebelumnya selama kurang dari 1 tahun. Penambahan premi sebesar 50 tentunya akan menambah total premi dan penambahan premi sebesar 100 akan menambah total premi lebih banyak (seperti yang ditunjukkan dalam *boxplot*).
+
+-   Premium_Amount dan Claims_Severity
+
+    Pelanggan yang memiliki *severity* tinggi perlu membayar premi dengan harga yang lebih mahal daripada pelanggan yang memiliki *severity* sedang atau rendah. Pelanggan yang memiliki *severity* rendah akan diberikan harga premi yang paling murah.
+
+-   Premium_Amount dan Policy_Type
+
+    Pelanggan dengan tipe polis *Liability-Only* akan diberikan pengurangan premi pada variabel "Policy_Adjustment", sehingga harga preminya lebih murah.
+
+-   Premium_Amount dan Policy_Adjustment
+
+    Variabel Policy_Adjustment akan memberikan pengurangan premi sebesar 200 jika tipe polisnya adalah *Liability-Only*. Pengurangan premi sebesar 200 tentunya akan mengurangi total premi (seperti yang ditunjukkan dalam *boxplot*).
+
+-   Premium_Amount dan Safe_Driver_Discount}
+
+    Pelanggan yang mendapat diskon karena memiliki riwayat mengemudi aman cenderung membayar premi yang lebih murah daripada pelanggan yang tidak memiliki riwayat mengemudi aman.
+
+-   Premium_Amount dan Multi_Policy_Discount
+
+    Pelanggan yang mendapat diskon karena memiliki lebih dari satu polis cenderung membayar premi yang lebih murah daripada pelanggan yang hanya memiliki satu polis.
+
+-   Premium_Amount dan Bundling_Discount
+
+    Pelanggan yang mendapat diskon karena *bundling* produk cenderung membayar premi yang lebih murah daripada pelanggan yang tidak mendapat diskon bundling produk.
+
+-   Premium_Amount dan Total_Discounts
+
+    Semakin tinggi total diskon, semakin murah pula premi yang harus dibayar pelanggan.
+
+-   Premium_Amount dan Conversion_Status
+
+    Pelanggan yang berhasil dikonversi cenderung harus membayar premi yang lebih murah daripada pelanggan yang tidak berhasil dikonversi.
+
+-   Premium_Amount dan Premium_Adjustment_Credit
+
+    Variabel Premium_Adjustment_Credit akan memberikan tambahan premi sebesar 50 jika skor kredit bernilai kurang dari 700 dan memberi pengurangan premi sebesar 50 jika skor kredit bernilai lebih dari 700. Penambahan premi sebesar 50 tentunya akan menambah total premi dan pengurangan premi sebesar 50 akan mengurangi total premi (seperti yang ditunjukkan dalam *boxplot*).
+
+-   Premium_Amount dan Region
+
+    Rata-rata harga premi paling rendah hingga paling tinggi secara berturut-turut adalah daerah pedesaan, pinggiran kota, dan perkotaan.
+
+-   Premium_Amount dan Premium_Adjustment_Region
+
+    Dengan melihat *boxplot* yang terbentuk, terlihat bahwa semakin besar penyesuaian premi akibat wilayah, semakin besar pula rata-rata harga premi. Artinya, wilayah dengan penyesuaian premi terbesar cenderung memberikan harga premi yang lebih mahal daripada wilayah lainnya.
+
+Terakhir, akan dianalisis hubungan dari beberapa variabel numerik dengan beberapa variabel kategorik dengan menggunakan metode ANOVA.
+
+```{r}
+#periksa hubungan variabel numerik dgn variabel kategorik (anova)
+boxplot(Age ~ Is_Senior)
+anova19 <- aov(Age ~ Is_Senior)
+summary(anova19)
+
+boxplot(Total_Discounts ~ Safe_Driver_Discount)
+anova20 <- aov(Total_Discounts ~ Safe_Driver_Discount)
+summary(anova20)
+
+boxplot(Total_Discounts ~ Multi_Policy_Discount)
+anova21 <- aov(Total_Discounts ~ Multi_Policy_Discount)
+summary(anova21)
+
+boxplot(Time_to_Conversion ~ Conversion_Status)
+anova22 <- aov(Time_to_Conversion ~ Conversion_Status)
+summary(anova22)
+
+boxplot(Credit_Score ~ Premium_Adjustment_Credit)
+anova23 <- aov(Credit_Score ~ Premium_Adjustment_Credit)
+summary(anova23)
+
+par(mfrow=c(1,1))
+```
+
+Dari sini, diperoleh variabel-variabel yang saling berhubungan adalah
+
+-   Age dan Is_Senior
+
+    Kedua variabel ini berhubungan secara positif. Seseorang yang usianya sudah tua akan diklasifikasikan sebagai lansia.
+
+-   Total_Discounts dan Safe_Driver_Discount
+
+    Kedua variabel ini berhubungan secara positif. Pelanggan yang mendapat diskon karena riwayat mengemudi aman umumnya juga mendapat total diskon yang banyak.
+
+-   Total_Discounts dan Multi_Policy_Discount
+
+    Kedua variabel ini berhubungan secara positif. Pelanggan yang mendapat diskon karena memiliki lebih dari satu polis umumnya juga mendapat total diskon yang banyak.
+
+-   Time_to_Conversion dan Conversion_Status
+
+    Kedua variabel ini berhubungan secara negatif. Pelanggan yang tidak berhasil dikonversi umumnya memerlukan waktu yang lebih lama pelanggan untuk membeli polis.
+
+-   Premium_Adjustment_Credit dan Credit_Score
+
+    Kedua variabel ini berhubungan secara negatif. Semakin tinggi skor kredit pelanggan, maka semakin tinggi pemotongan preminya. Sebaliknya, jika skor kredit pelanggan rendah, maka premi yang harus dibayar akan semakin mahal.
+
+# Soal 2 - Decision Tree
+
+```{r}
+# Membuat kolom Premium_Class berdasarkan Premium_Amount
+data$Premium_Class <- ifelse(data$Premium_Amount > 2000, "High", "Low")
+data$Premium_Class <- as.factor(data$Premium_Class)
+
+set.seed(123)  # untuk hasil yang konsisten
+
+# Ambil indeks untuk Premium_Class == "High"
+high_index <- which(data$Premium_Class == "High")
+train_high <- sample(high_index, 800)
+
+# Ambil indeks untuk Premium_Class == "Low"
+low_index <- which(data$Premium_Class == "Low")
+train_low <- sample(low_index, 800)
+
+# Gabungkan indeks training
+train_index <- c(train_high, train_low)
+
+# Buat data train dan data test
+data_train <- data[train_index, ]
+data_test <- data[-train_index, ]
+```
+
+Tanpa melakukan validasi silang dengan menggunakan *library* rpart, maka dapat ditetapkan beberapa nilai parameter yaitu
+
+-   *parms*: menentukan ukuran apa yang akan digunakan dalam penentuan *splitting*, dapat dipilih antara menggunakan *information gain* atau indeks Gini.
+
+-   *complexity* parameter (cp): nilai batas untuk menentukan apakah *splitting* akan dilakukan, sehingga pohon tidak menjadi terlalu kompleks. Nilai cp diformulasikan dalam bentuk
+
+$$
+\sum_{\text{Terminal Nodes}} \text{Misclass}_i + \lambda \times (\text{Splits}).
+$$
+
+-   *minsplit*: nilai minimum dari banyaknya observasi pada \\textit{node} sebelum *splitting* dilakukan.
+
+-   *minbucket*: minimum banyaknya observasi pada *leaf node* yang harus terpenuhi.
+
+-   *maxdepth*: batas maksimum kedalaman pohon untuk mencegah *overfitting.*
+
+Dengan menerapkan nilai parameter-parameter di atas dan tanpa melakukan validasi silang, dapat diperoleh *decision tree*-nya (sebut sebagai model 1) adalah sebagai berikut:
+
+```{r}
+#Membentuk decision tree
+full_model1 <- rpart(Premium_Class~. - Premium_Amount, data=data_train, parms=list(split=c("information")),
+      cp = 0.01, minsplit=30, minbucket=20, maxdepth=5)
+rpart.plot(full_model1)
+
+# Prediksi pada data_tes
+predictions <- predict(full_model1, data_test, type = "class")
+confusionMatrix(predictions, data_test$Premium_Class)
+```
+
+Hal ini menunjukkan bahwa variabel-variabel yang penting dalam menentukan *premium class* adalah *policy type*, *marital status*, *region*, *credit score*, *total discounts*, dan *claim frequency*. Hasil prediksi juga menunjukkan nilai metrik yang baik, khususnya *accuracy* sebesar 89,55%, *sensitivity* sebesar 89,44%, dan *specificity* sebesar 93,69% sehingga mengindikasikan model yang tidak *overfit*.
+
+Setelah itu, akan ditampilkan hasil *variable importance plot* dengan menggunakan kode di bawah. Nilai pada plot ini diperoleh berdasarkan penjumlahan dari pengurangan *impurity* yang terjadi dari pemisahan-pemisahan pada seluruh pohon.
+
+```{r}
+# Menampilkan daftar variabel penting (Variable Importance)
+importance <- full_model1$variable.importance
+importance_sorted <- sort(importance, decreasing = TRUE)
+print(importance_sorted)
+```
+
+Berdasarkan hasil tersebut, dapat diperoleh bahwa variabel *policy adjustment*, *policy type*, *marital status*, dan *married premium discount* termasuk dalam variabel-variabel yang paling signifikan dalam menentukan *premium class*. Akan tetapi, dapat dilihat bahwa ada beberapa variabel yang nilainya serupa atau bahkan sama persis. Untuk efisiensi penggunaan variabel, maka hanya akan dipilih satu diantara banyaknya variabel yang memiliki nilai yang sama. Oleh karena itu, terdapat beberapa variabel yang ditunjukkan signifikan oleh *variable importance plot*-nya, tetapi tidak terdapat pada *decision tree*, seperti *policy adjustment*.
+
+Kurva *Receiver Operating Characteristic* (ROC) adalah kurva yang menggambarkan kemampuan model untuk mengatasi masalah klasifikasi dengan mencoba nilai *threshold* yang berbeda-beda. Sumbu-$x$ menyatakan tingkat *specificity* dan sumbu-$y$ menyatakan tingkat *sensitivity*. Untuk membandingkan performa antara dua buah model, akan digunakan metrik *Area Under Curve* (AUC) yang menyatakan luas daerah di bawah kurva ROC. Nilai AUC yang semakin mendekati 1 mengindikasikan performa model yang semakin baik. Jika AUC bernilai 1, maka berarti terdapat suatu *threshold* di mana model dapat secara sempurna mengklasifikasikan *premium class*. Kurva ROC dan nilai AUC dari *decision tree* yang telah dibentuk ditampilkan pada plot di bawah ini.
+
+```{r}
+#Membuat kurva ROC
+library(pROC)  # Library untuk ROC curve
+
+# Untuk ROC, kita butuh probabilitas prediksi, bukan class
+prob_predictions <- predict(full_model1, data_test, type = "prob")
+
+# Misal Premium_Class ada dua kelas: "Low" dan "High"
+# Kita plot ROC untuk salah satu kelas (contohnya kelas "High")
+roc_curve <- roc(
+  response = data_test$Premium_Class,
+  predictor = prob_predictions[, "High"], # Ubah "High" sesuai nama kelas kamu
+  levels = rev(levels(data_test$Premium_Class))
+)
+
+# Plot ROC curve
+plot(roc_curve, col = "blue", main = "ROC Curve for Decision Tree")
+auc_value <- auc(roc_curve)
+print(paste("AUC:", auc_value))
+```
+
+Dengan nilai AUC sebesar 0,9497 serta metrik-metrik yang sudah ditampilkan dalam *confusion matrix*, maka dapat dikatakan bahwa model *decision tree* dapat secara baik mengklasifikasi *premium class}*. Berikutnya, Eksplorasi parameter-parameter yang telah dijelaskan juga akan dilakukan dan divisualisasikan pada 4 plot di bawah.
+
+```{r}
+#Membentuk decision tree
+full_model2 <- rpart(Premium_Class~. - Premium_Amount, data_train, parms=list(split=c("information")),
+      cp = 0.02, minsplit=30, minbucket=20, maxdepth=5)
+rpart.plot(full_model2)
+
+# Prediksi pada data_tes
+predictions <- predict(full_model2, data_test, type = "class")
+confusionMatrix(predictions, data_test$Premium_Class)
+
+```
+
+```{r}
+#Membentuk decision tree
+full_model3 <- rpart(Premium_Class~. - Premium_Amount, data_train, parms=list(split=c("information")),
+      cp = 0.01, minsplit=100, minbucket=40, maxdepth=5)
+rpart.plot(full_model3)
+
+# Prediksi pada data_tes
+predictions <- predict(full_model3, data_test, type = "class")
+confusionMatrix(predictions, data_test$Premium_Class)
+```
+
+```{r}
+#Membentuk decision tree
+full_model4 <- rpart(Premium_Class~. - Premium_Amount, data_train, parms=list(split=c("information")),
+      cp = 0.01, minsplit=30, minbucket=20, maxdepth=3)
+rpart.plot(full_model4)
+
+# Prediksi pada data_tes
+predictions <- predict(full_model4, data_test, type = "class")
+confusionMatrix(predictions, data_test$Premium_Class)
+```
+
+Model 2, 3, dan 4 secara berturut-turut mengganti nilai cp, *minsplit* bersamaan dengan *minbucket*, dan *maxdepth*. Perubahan nilai metrik-metrik *accuracy*, *sensitivity*, dan *specificity* juga akan dievaluasi pada bagian ini. Saat nilai cp diperbesar, maka model menjadi lebih sederhana dan terjadi pengurangan pada seluruh nilai metrik. Saat nilai *minsplit* dan *minbucket* diperbesar, maka model juga menjadi lebih sederhana dan terjadi peningkatan yang kecil pada *accuracy* dan *sensitivity*, sedangkan terjadi penurunan yang signifikan pada *specificity*. Jika nilai dari *maxdepth* diperkecil, maka model juga akan menjadi lebih sederhana, dan terjadi penurunan pada seluruh nilai metrik tersebut.
+
+Fungsi *train control* akan menentukan teknik yang akan digunakan untuk melatih atau memvalidasi model. Dengan menetapkan metodenya sebagai cv dan *number* = 10, berarti model akan divalidasi dengan metode *cross validation* di mana data dibagi menjadi 10 bagian. Masing-masing bagian akan digunakan sebagai data uji dan kesembilan bagian lainnya akan digunakan sebagai data latih.
+
+Pada fungsi *train*, ditetapkan nilai dari *tuneLength*-nya adalah 10. Artinya, R akan secara otomatis menentukan 10 nilai cp yang bervariasi dan biasanya mengecil seperti 0,1, 0,05, dan 0,01. Kemudian, untuk setiap nilai cp, akan diterapkan *cross validation* dan model akan divalidasi. Akan dipilih nilai cp pada model dengan performa terbaik. Jika menggunakan *rpart* saja, maka nilai dari cp akan ditentukan secara manual yang dapat menyebabkan model menjadi *underfit* maupun *overfit*.
+
+```{r}
+ctrl <- trainControl(method = "cv", number = 10)
+fit_tree <- train(Premium_Class ~ ., data = data_train[, -which(names(data_train) == "Premium_Amount")], method = "rpart", trControl = ctrl, tuneLength = 10)
+
+rpart.plot(fit_tree$finalModel)
+
+
+# Prediksi pada data tes
+predictions <- predict(fit_tree, newdata = data_test)
+
+# Confusion matrix
+confusionMatrix(predictions, data_test$Premium_Class)
+
+# Get the variable importance
+importance <- varImp(fit_tree, scale = FALSE)
+print(importance)
+
+# Make probability predictions (not just the classes)
+pred_prob <- predict(fit_tree, newdata = data_test, type = "prob")
+
+# Assuming your Premium_Class has two levels and the positive class is the first level
+roc_curve <- roc(data_test$Premium_Class, pred_prob[, 2])  # Use the probabilities for the positive class
+
+# Plot the ROC curve
+plot(roc_curve, main = "ROC Curve", col = "blue", lwd = 2)
+auc_value <- auc(roc_curve)
+print(paste("AUC:", auc_value))
+```
+
+Hasil dari *decision tree yang terbentuk* dengan menggunakan *cross validation* ternyata lebih kompleks dibandingkan model pertama dari *decision tree* yang dibentuk (model 1). Hal ini disebabkan karena pada kode tersebut tidak ditetapkan batasan parameter seperti *minsplit* dan *maxbucket*. Hasil prediksi juga menunjukkan peningkatan dalam hal *accuracy* dan *sensitivity* yaitu masing-masing menjadi 91,75% dan 91,79%, tetapi terjadi penurunan dalam *specificity* yaitu menjadi 90,29%.
+
+Selain itu, *variable importance plot* juga ditampilkan dan menunjukkan hasil yang sedikit berbeda dibandingkan *variable importance plot* pada model 1. Sebagai contoh, jenis polis yang awalnya merupakan *full coverage* berubah menjadi *liability only*. Walaupun demikian, terdapat pula variabel-variabel yang masih dianggap sama sebagai variabel yang paling signifikan dalam menentukan *premium class* yaitu *policy adjustment*, *marital status*, dan *married premium discount*.
+
+Terakhir, ditunjukkan plot dari kurva ROC sehingga diperoleh nilai AUC sebesar 0,9449 di mana nilai ini sedikit lebih rendah dibandingkan AUC pada model 1 yaitu sebesar 0,9497. Telah dijelaskan bahwa nilai AUC memberikan informasi mengenai seberapa baik model dapat mengklasifikasi *premium class* menjadi *high* atau *low*. Oleh karena itu, walaupun pada umumnya *decision tree* dengan *cv* mengungguli *decision tree* tanpa *cv*, namun kali ini model *decision tree* tanpa *cv* akan dipilih sebagai model terbaik yang dapat mengatasi masalah klasifikasi *premium class*.
+
+Sekarang, akan diberikan interpretasi dari model 1 yakni model pertama *decision tree* yang dibentuk untuk menentukan faktor-faktor apa yang mempengaruhi seseorang memiliki premi yang besar atau dengan kata lain termasuk dalam *premium class* yang tinggi (*high*). Berikut adalah kondisi-kondisi yang akan menyebabkan premi seseorang besar:
+
+-   Memiliki tipe polis yang *full coverage* karena jaminan risiko yang lebih tinggi akan mengakibatkan nilai premi semakin meningkat pula.
+
+-   Memiliki tipe polis selain *full coverage*, telah menikah, masuk dalam wilayah *suburban* atau *urban* dan menerima diskon kurang dari 75, atau tidak masuk ke dua wilayah tersebut namun memiliki *credit score* kurang dari 698.
+
+-   Memiliki tipe polis selain *full coverage*, belum menikah, memiliki *credit score* kurang dari 702, masuk dalam wilayah *urban* atau tidak masuk dalam wilayah *urban* tetapi frekuensi klaimnya lebih dari 1.
+
+Sebagai penjelasan ke divisi *marketing*, premi seseorang yang besar cenderung dipengaruhi oleh enam faktor yaitu tipe polis, status menikah, wilayah, besar diskon yang diperoleh, skor kredit, dan frekuensi klaim. Jika seseorang memiliki tipe polis yang *full coverage*, maka hampir dapat dipastikan orang tersebut memiliki premi yang besar. Selanjutnya, jika ia tidak memiliki tipe polis *full coverage*, maka kita akan lanjut untuk melihat status menikah. Namun, melihat seseorang sudah menikah atau belum tidak dapat sepenuhnya memastikan kelas premi dari orang tersebut.
+
+Jika ia belum menikah, maka tinjau wilayah dari orang tersebut. Jika wilayahnya adalah *suburban* atau *urban* dan menerima diskon kurang dari 75, maka ia akan memiliki premi yang besar. Terdapat juga kasus lain yang mengindikasikan seseorang memiliki premi besar yaitu ia tidak tinggal dalam dua wilayah tersebut, tetapi skor kreditnya kurang dari 698.
+
+Sekarang, jika ia sudah menikah, maka tinjau apakah skor kreditnya kurang dari 702. Jika pernyataan tersebut benar, maka lihat apakah ia tinggal dalam wilayah *urban*. Jika ia tinggal dalam wilayah tersebut, maka ia memiliki premi yang tinggi. Akan tetapi, jika ia tidak tinggal dalam wilayah tersebut, maka frekuensi klaim yang melebihi sekali akan membuat orang tersebut memiliki premi yang besar.
+
+# Soal 3 - Random Forest dan Boosting
+
+```{r}
+#Penghapusan variabel 'Premium Amount'
+train_data <- data_train %>% select(-Premium_Amount)
+test_data  <- data_test %>% select(-Premium_Amount)
+
+# Ubah semua karakter jadi factor
+train_data[] <- lapply(train_data, function(x) {
+  if (is.character(x)) as.factor(x) else x
+})
+
+test_data[] <- lapply(test_data, function(x) {
+  if (is.character(x)) as.factor(x) else x
+})
+```
+
+Dengan pembagian data latih dan data uji yang sama seperti pada saat membuat model decision tree, akan dibuat model random forest dan *Gradient Boosting Machine* (GBM) untuk memprediksi kelas premidari pemegang polis.
+
+```{r}
+# Model Random Forest
+set.seed(123)
+rf_model <- randomForest(Premium_Class ~ ., data = train_data,
+                         ntree = 500, mtry = 5, nodesize=10, importance = TRUE)
+
+# Top 5 fitur penting
+rf_imp <- importance(rf_model)
+rf_top5 <- head(rf_imp[order(rf_imp[, 1], decreasing = TRUE), , drop = FALSE], 5)
+print(rf_top5)
+```
+
+Lima fitur terpenting dalam model Random Forest adalah *policy adjustment*, *policy type*, *premium adjustment region*, *married premium discount*, dan *marital status*.
+
+Selain itu, dapat dilihat juga nilai *Mean Decrease Accuracy* dan *Mean decrease* Gini dari masing-masing fitur. Nilai *Mean Decrease Accuracy* menunjukkan seberapa besar penurunan akurasi model jika nilai suatu fitur diacak. Sementara itu, *Mean Decrease* Gini mengukur kontribusi fitur dalam memecah node pada pohon-pohon dalam Random Forest. Semakin tinggi kedua nilai, semakin besar peran fitur tersebut dalam membangun model. Perhatikan juga bahwa terdapat nilai "*High*" dan "*Low*" untuk masing-masing fitur. Nilai ini memberikan gambaran mengenai sejauh mana fitur memengaruhi masing-masing kelas target ("*High*" dan "*Low*").
+
+Sebagai contoh, fitur Policy Adjustment memiliki kontribusi sebesar 172.368 dalam pemecahan node, dan jika nilainya diacak, akurasi model menurun sebesar 27.9%. Fitur ini juga memberikan pengaruh sebesar 27.65014 terhadap prediksi kelas "*High*" dan 27.7241 terhadap kelas "*Low*".
+
+Selanjutnya, akan diprediksi kelas premium dari data uji yang dimiliki dengan menggunakan model Random Forest yang sudah dibangun.
+
+```{r}
+# Prediksi model Random Forest test data
+rf_pred2 <- predict(rf_model, newdata = test_data)
+
+# Confusion matrix
+confusionMatrix(rf_pred2, test_data$Premium_Class)
+```
+
+Dari confusion matrix di atas, dapat dilihat akurasi prediksi modelnya. Model Random Forest memiliki akurasi sebesar 95.74%. Karena nilainya yang dekat dengan 1, dapat dikatakan bahwa model ini dapat memprediksi kelas premium dengan baik.
+
+```{r}
+# ROC AUC Test
+rf_prob2 <- predict(rf_model, newdata = test_data, type = "prob")[, "High"]
+rf_roc2 <- roc(test_data$Premium_Class, rf_prob2)
+plot(rf_roc2, main = "ROC - Random Forest")
+auc(rf_roc2)
+```
+
+Selain dengan melihat akurasi model, dapat pula dilihat performa model dengan menggunakan kurva *Receiver Operating Characteristic* (ROC) *Area Under the Curve* (AUC). Kurva ROC menunjukkan *trade-off* antara *True Positive Rate* (TPR) dan *False Positive Rate* (FPR). Pada kurva ROC, nilai FPR merupakan sumbu x dan nilai TPR merupakan sumbu y. True positive rate sendiri merupakan proporsi dari banyaknya orang yang diklasifikasikan sebagai positifdan benar merupakan positif, sedangkan FPR merupakan proporsi banyaknya observasi yang diklasifikasikan sebagai positif, namun sebenarnya adalah negatif. Semakin tinggi nilai y dan semakin rendah nilai x, maka semakin baik model dalam memprediksi. Pada kasus ini, kelas "*High*" merupakan positifdan kelas "*Low*" merupakan negatif. Dari kurva ROC, dapat diperoleh nilai AUC. Nilai ini merupakan luas di bawah kurva yang nilainya diantara 0 sampai 1. Semakin mendekati 1 nilainya, semakin baik model membedakan kedua kelas.
+
+Pada model Random Forest yang dimiliki, dapat dilihat bahwa nilai AUC-nya adalah 0.9952. Nilai ini sangat dekat dengan 1, yang artinya model Random Forest yang dimiliki dapat memprediksi kelas premi dengan sangat baik.
+
+Kemudian, akan dicari nilai parameter "mtry" pada model Random Forest agar memiliki nilai AUC tertinggi. Nilai "mtry" sendiri merupakan jumlah fitur yang diacak dan dipertimbangkan padasetiap node dalam sebuah pohon keputusan.
+
+```{r}
+# Set up trainControl untuk cross-validation
+control <- trainControl(
+  method = "cv",
+  number = 5,
+  classProbs = TRUE,
+  summaryFunction = twoClassSummary,
+  savePredictions = "final"
+)
+
+# Tuning model Random Forest dengan parameter mtry
+set.seed(123)
+
+tuned_rf <- train(
+  Premium_Class ~ .,
+  data = train_data,
+  method = "rf",
+  metric = "ROC",
+  tuneGrid = expand.grid(mtry = c(2, 3, 4, 5, 6)),
+  trControl = control,
+  ntree = 500
+)
+
+# Hasil
+plot(tuned_rf)
+print(tuned_rf)
+best_rf_model <- tuned_rf$finalModel
+cat("\nBest Random Forest Model (bestTune):\n")
+print(tuned_rf$bestTune)
+```
+
+Dengan menggunakan fungsi train dan trainControl, diperoleh bahwa nilai "mtry" yang menghasilkan AUC tertinggi adalah 4 atau 5. Lebih lanjut, AUC untuk 4 *mtry* adalah 0.9950430, sedangkan untuk 5 *mtry* adalah 0.9951406. Dengan selisih yang tipis, nilai untuk 5 mtry lebih tinggi dibandingkan dengan 4 *mtry*, sehingga dapat disimpulkan bahwa untuk memperoleh model terbaik guna memprediksi kelas premi dari model Random Forest yang menggunakan 500 pohon adalah dengan mengatur *mtry*-nya menjadi 5.
+
+```{r}
+# Mengonversi Premium_Class ke 0 dan 1
+train_biner <- train_data
+test_biner <- test_data
+
+train_biner$Premium_Class <- ifelse(train_biner$Premium_Class == "High", 1, 0)
+test_biner$Premium_Class <- ifelse(test_biner$Premium_Class == "High", 1, 0)
+```
+
+Selanjutnya, akan dibangun model GBM untuk memprediksi kelas premi.
+
+```{r}
+# Model GBM
+set.seed(123)
+gbm_model <- gbm(Premium_Class ~ ., data = train_biner,
+                 distribution = "bernoulli",
+                 n.trees = 5000, interaction.depth = 3, n.minobsinnode=10,
+                 shrinkage = 0.05, verbose = FALSE)
+
+# Top 5 fitur penting
+gbm_imp <- summary(gbm_model, plotit = FALSE)
+head(gbm_imp, 5)
+```
+
+Pada model GBM, lima fitur terpentingnya adalah *policy type*, *policy adjustment*, *credit score*, *married premium discount*, dan *region*. Dapat dilihat juga nilai *relative influence* dari masing-masing fitur. Nilai ini menunjukkan persentase kontribusi sebuah fitur terhadap keseluruhan prediksi model. Pada model ini, terlihat bahwa fitur *policy type* merupakan fitur yang paling besar memberikan kontribusi dalam memprediksi kelas premi, di mana kontribusinya adalah sebesar 32.72%.
+
+```{r}
+#Akurasi Test Data
+gbm_prob2 <- predict(gbm_model, newdata = test_data, n.trees = 5000, type = "response")
+gbm_pred2 <- ifelse(gbm_prob2 > 0.5, "High", "Low")
+gbm_pred2 <- factor(gbm_pred2, levels = c("Low", "High"))
+
+#Confusion matrix
+confusionMatrix(gbm_pred2, test_data$Premium_Class)
+```
+
+Terlihat dari *confusion matrix* untuk model GBM, akurasi model ini adalah 96.29%. Sebelumnya, diperoleh bahwa unutk model Random Forest nilai akurasinya adalah 95.74%. Artinya, model GBM lebih akurat dalam memprediksi kelas premi dibandingkan dengan model Random Forest.
+
+```{r}
+# ROC AUC Test
+gbm_roc2 <- roc(test_data$Premium_Class, gbm_prob2)
+plot(gbm_roc2, main = "ROC - GBM")
+auc(gbm_roc2)
+```
+
+Dari kurva ROC di atas, dapat dilihat bahwa nilai TPR sangat tinggi dan nilai FPR relatif rendah. Ini juga tercerminkan dari nilai AUC-nya yang sangat dekat dengan 1, yakni 0.999. Sebelumnya pada model Random Forest, nilai AUC untuk modelnya adalah 0.9952. Dengan selisih yang tipis, dapat disimpulkan bahwa model GBM lebih baik dalam memprediksi kelas premi.
+
+Kemudian, akan dicari pula nilai-nilai untuk parameter "n.trees", "interaction.depth", "shrinkage", dan "n.minobsinnode". Parameter "n.trees" menunjukkan jumlah pohon yang digunakan pada model tersebut, di mana semakin banyak pohon yang dibangun, semakin kompleks modelnya. Harapannya model yang lebih kompleks tersebut mampu menangkap pola data dengan lebih baik, meskipun berisiko overfitting jika jumlahnya terlalu besar.
+
+Selanjutnya, parameter "interaction.depth" menentukan seberapa dalam pohon dapat bercabang, atau seberapa rumit interaksi antar fitur yang bisa ditangkap oleh model. Semakin besar nilainya, semakin dalam model dalam memahami hubungan antar variabel.
+
+Parameter berikutnya, yaitu "shrinkage", berfungsi untuk mengatur seberapa besar langkah pembelajaran setiap kali model menambahkan pohon baru. Semakin kecil Nilai yang lebih kecil nilainya, semakin hati-hati pembelajaran model ini, sehingga lebih tahan terhadap overfitting, meskipun memerlukan lebih banyak iterasi.
+
+Terakhir, parameter "n.minobsinnode" digtunakan untuk mengatur jumlah minimal data yang harus ada dalam satu node agar pohon dapat bercabang lagi. Hal ini membantu model menghindari pembuatan cabang dengan observasi yang terlalu sedikit, sehingga hasilnya lebih stabil dan tidak terlalu spesifik terhadap data latih.
+
+```{r}
+# Tuning model GBM dengan parameter n.trees, interaction.depth, shrinkage, dan n.minobsinnode
+set.seed(123)
+
+tuned_gbm <- train(
+  Premium_Class ~ .,
+  data = train_data,
+  method = "gbm",
+  metric = "ROC",
+  verbose = FALSE,
+  tuneGrid = expand.grid(
+    n.trees = c(1000, 2000, 3000, 4000, 5000),           # Jumlah pohon
+    interaction.depth = c(1, 3, 5, 7),          # Kedalaman pohon
+    shrinkage = c(0.01, 0.05, 0.1),             # Laju pembelajaran
+    n.minobsinnode = c(10, 20, 30)              # Minimum observasi dalam node
+  ),
+  trControl = control
+)
+
+# Hasil
+plot(tuned_gbm)
+best_gbm_model <- tuned_gbm$finalModel
+cat("\nBest GBM Model (bestTune):\n")
+print(tuned_gbm$bestTune)
+```
+
+Diperoleh bahwa nilai-nilai dari parameter yang menghasilkan nilai AUC tertinggi adalah:
+
+-   *n.trees* = 2,000.
+
+-   *interaction.depth* = 1.
+
+-   *shrinkage* = 0.1.
+
+-   *n.minobsinnode* = 30.
+
+Dengan menggunakan nilai-nilai tersebut, diperoleh nilai AUC-nya adalah 0.9998887. Nilai ini menunjukkan bahwa model GBM dapat sangat baik dalam memprediksi kelas premi, bahkan hampir sempurna. Dengan selisih yang sangat tipis, model GBM memiliki performa yang lebih baik jika dibandingkan dengan model Random Forest. Namun, perlu diperhatikan bahwa model GBM cenderung untuk *overfit*, sehingga ini satu hal yang perlu diwaspadai.
+
+## Rekomendasi untuk Divisi *Marketing*
+
+Berdasarkan hasil evaluasi model, kami merekomendasikan penggunaan Random Forest untuk klasifikasi pemegang polis dengan premi besar dan kecil. Meskipun model GBM menunjukkan performa yang lebih unggul, contohnya nilai AUC yang sangat tinggi, yaitu 0.999, sedangkan Random Forest hanya mencapai 0.9952, perbedaan ini tidak terlalu signifikan, sehingga tidak terlalu berpengaruh. Alasan kami tidak merekomendasikan penggunaan GBM adalah karakteristik dari model ini yang cenderung lebih mudah mengalami *overfitting*, yaitu terlalu menyesuaikan diri dengan data latih sehingga kurang baik saat diterapkan pada data baru. Hal ini dapat membatasi luasnya aplikasi model GBM dalam skenario nyata.
+
+Secara singkat, model GBM sendiri merupakan model yang dibangun secara bertahap dan bertingkat. Dimulai dari model yang sederhana, kemudian secara bertahap menambahkan model-model kecil lainnya guna memperbaiki kesalahan dari model sebelumnya. Setiap model baru difokuskan pada bagian data yang sebelumnya diprediksi dengan kurang tepat. Proses ini terus berlanjut hingga sejumlah langkah tertentu, sehingga model akhir merupakan gabungan dari banyak model kecil yang saling melengkapi. Karena hal ini, GBM dinilai cenderung untuk *overfit* karena model hanya difokuskan dengan data yang dimiliki, di mana bisa saja ada pola-pola yang sebenarnya hanya ada pada data tersebut ditangkap sebaagai sesuatu yang umum.
+
+Di sisi lain, model Random Forest dikenal lebih stabil dan umum. Hal ini dikarenakan Random Forest dibangun dari banyak pohon keputusan yang dilatih secara acak, lalu digabungkan melalui pengambilan suara (*voting*). Pendekatan ini membuat Random Forest lebih tahan terhadap risiko *overfitting* dan lebih mampu untuk menghasilkan prediksi dengan baik pada data baru.
+
+Dengan demikian, model Random Forest menjadi pilihan yang lebih dapat dipercaya dan lebih fleksibel untuk mendukung keputusan pemasaran pada kondisi yang beragam.
+
+# Soal 4 - Regresi Linear Berganda, Generalized Linear Model, dan Regularisasi
+
+Pada bagian ini akan dibangun beberapa model untuk memprediksi variabel `Premium_Amount` menggunakan model regresi linear berganda dengan *subset selection*, *stepwise forward*, *stepwise backward*, *Generalized Linear Model* (GLM) serta regularisasi *ridge*, *lasso*, dan elastic-net. Kemudian, model-model yang telah dibangun akan dibandingkan dengan berbagai metrik pengukuran *error* untuk menentukan model terbaik untuk memprediksi `Premium_Amount`.
+
+## Memuat Data
+
+```{r}
+data = read.csv("data-UTS.csv",sep=";")
+data = na.omit(data)
+```
+
+## Menghapus Data Pencilan
+
+Bagian ini data-data `Premium_Ammount` yang berupa outlier akan dihapus dari data set. Penghapusan ini bertujuan agar model regresi linear yang dibangun tidak terpengaruh oleh kasus-kasus ekstrim yang ada pada data *outlier*.
+
+```{r include=FALSE}
+# Calculate IQR
+Q1 <- quantile(data$Premium_Amount, 0.25, na.rm = TRUE)
+Q3 <- quantile(data$Premium_Amount, 0.75, na.rm = TRUE)
+IQR_val <- Q3 - Q1
+
+lower_bound <- Q1 - 1.5 * IQR_val
+upper_bound <- Q3 + 1.5 * IQR_val
+
+# Print bounds for checking
+cat("Lower Bound:", lower_bound, "\n")
+cat("Upper Bound:", upper_bound, "\n")
+
+# Subset data
+data_clean <- data[data$Premium_Amount >= lower_bound & data$Premium_Amount <= upper_bound, ]
+```
+
+## Merubah Data Kategorik menjadi Faktor
+
+Setelah menghilangkan data *outlier*, selanjutnya setiap kolom kategorik dalam data akan diubah menjadi sebuah faktor. Perubahan ini bertujuan agar model di R dapat mengenali dan memperlakukan variabel tersebut sebagai data kategorik, bukan sebagai data numerik atau karakter biasa. Dengan menjadikan kolom sebagai faktor, R dapat
+
+-   Mengelompokkan data berdasarkan kategori secara otomatis,
+
+-   Menghitung statistik per kategori dengan benar,
+
+```{r include=FALSE}
+data_clean[] = lapply(data_clean, function(x) if (is.character(x)) as.factor(x) else x)
+```
+
+```{r echo=FALSE}
+str(data_clean)
+```
+
+```{r echo=FALSE}
+summary(data_clean)
+```
+
+## Data Latih dan Data Uji
+
+Pada bagian ini, data akan dibagi menjadi data latih dan data uji. Pembagian data akan mengikuti komposisi $80\%$ untuk data latih dan $20\%$ untuk data uji. Hal ini dilakukan agar model regresi memiliki cukup banyak data untuk mempelajari pola-pola yang terdapat dalam data. Dengan proporsi $80\%$ untuk pelatihan, model memiliki informasi yang memadai untuk mengenali hubungan antara variabel prediktor dan variabel target. Sementara itu, $20\%$ sisanya disisihkan sebagai data uji agar model dapat dievaluasi secara objektif terhadap data yang belum pernah dilihat sebelumnya. Hal ini penting untuk menilai kemampuan generalisasi model dalam memprediksi data baru, serta menghindari overfitting.
+
+```{r}
+set.seed(888)
+train_index = sample(1:nrow(data_clean),0.8*nrow(data_clean))
+train = data_clean[train_index,]
+test = data_clean[-train_index,]
+```
+
+## Subset Selection
+
+Pada tahap ini, akan digunakan fungsi `subset_selection` dari pustaka `leaps` untuk membangun model yang memprediksi variabel `Premium_Amount` berdasarkan variabel-variabel prediktor yang tersedia dalam data. Jumlah maksimum variabel bebas yang dapat digunakan dalam satu model adalah 27, yang dalam konteks ini berarti model yang mencakup seluruh variabel prediktor dalam data. Setelah berbagai model dibentuk, akan dipilih satu model terbaik berdasarkan kinerjanya terhadap data uji. Model terbaik tersebut kemudian akan dievaluasi lebih lanjut untuk memastikan apakah ia memenuhi asumsi-asumsi dasar dari regresi linear.
+
+```{r}
+  regfit_full = regsubsets(Premium_Amount~.,data=train,nvmax=27)
+```
+
+```{r}
+set.seed(888)
+reg_summary_subset = summary(regfit_full)
+print(reg_summary_subset)
+```
+
+Tabel di atas menunjukkan hasil dari proses *subset selection* menggunakan fungsi `regsubsets` untuk memodelkan variabel respons `Premium_Amount` berdasarkan seluruh variabel bebas yang tersedia dalam data. Prosedur ini dilakukan secara ekshaustif, yaitu dengan mengevaluasi seluruh kemungkinan kombinasi variabel hingga maksimum 27 prediktor.
+
+Setiap baris pada tabel merepresentasikan sebuah model dengan jumlah variabel bebas tertentu, mulai dari model dengan satu variabel hingga model dengan 27 variabel. Simbol `"*"` menandakan bahwa variabel tersebut disertakan dalam model pada baris tersebut. Selanjutnya akan ditampilkan metrik-metrik untuk mengukur performa dari semua model yang telah dibentuk oleh proses *subset-selection.*
+
+```{r}
+for (metric in names(reg_summary_subset)) {
+  if (metric != "which" && metric != "outmat" && metric != "obj") {
+    cat(metric, ":\n")
+    print(reg_summary_subset[[metric]])
+    cat("\n")
+  }
+}
+
+```
+
+Data di atas menunjukkan nilai-nilai metrik performa dari 27 model yang dihasilkan melalui proses *subset selection*, yaitu metode pemilihan subset terbaik dari sekumpulan variabel prediktor. Setiap model memiliki jumlah prediktor yang berbeda, mulai dari satu hingga semua variabel yang tersedia. Lima metrik evaluasi digunakan untuk menilai performa model, yaitu: *R-squared* (`rsq`), *Residual Sum of Squares* (`rss`), *Adjusted R-squared* (`adjr2`), *Mallow's Cp* (`cp`), dan *Bayesian Information Criterion* (`bic`). Masing-masing metrik terdiri dari 27 angka yang mencerminkan performa model ke-1 hingga ke-27.
+
+-   **R-squared** (`rsq`) mengukur proporsi variasi dalam data respons yang dapat dijelaskan oleh prediktor dalam model. Nilainya meningkat seiring penambahan prediktor dan mencapai 1 pada model ke-7 dan seterusnya, yang mengindikasikan bahwa model mampu menjelaskan seluruh variasi data.
+
+-   **Residual Sum of Squares** (`rss`) menunjukkan total kesalahan prediksi model. Nilainya menurun drastis dari model pertama hingga ketujuh, yang artinya penambahan prediktor mengurangi error. Setelah model ke-7, nilai RSS mendekati nol, bahkan menjadi nol pada model ke-27.
+
+-   **Adjusted R-squared** (`adjr2`) merupakan pengembangan dari R² yang memberikan penalti untuk penambahan variabel yang tidak memberi kontribusi berarti terhadap model. Nilai `adjr2` meningkat hingga model ke-6 atau ke-7, lalu menetap di angka 1, yang menandakan bahwa model setelah titik ini tidak memberikan peningkatan dalam kualitas prediksi, meskipun model bertambah kompleks.
+
+-   **Mallow's Cp** (`cp`) digunakan untuk menilai keseimbangan antara bias dan varians dalam model. Idealnya, nilai Cp mendekati jumlah parameter dalam model ditambah 1. Dalam data ini, Cp mengalami penurunan ekstrem dari nilai sangat besar ke nilai yang lebih stabil mulai sekitar model ke-7. Nilai Cp yang paling mendekati jumlah prediktor ditemukan pada model ke-16.
+
+-   **Bayesian Information Criterion** (`bic`) adalah metrik penalti kompleksitas model, di mana nilai yang lebih kecil (lebih negatif) menunjukkan model yang lebih baik. Nilai BIC turun secara konsisten hingga model ke-26, lalu menjadi negatif tak terhingga (`-Inf`) pada model ke-27. Hal ini kemungkinan besar terjadi karena RSS bernilai nol yang dapat berarti bahwa model *overfit.*
+
+Selanjutnya akan ditampilkan model-model terbaik berdasarkan metrik performa *Adjusted* $R^2$, *Mallow's Cp,* dan BIC. Alasan kami memilih metrik performa ini adalah metrik performa tersebut memberikan penalti kepada model yang terlalu kompleks dan mengoptimalkan error dan jumlah variabel dalam model.
+
+```{r}
+set.seed(888)
+cp <- reg_summary_subset$cp
+bic <- reg_summary_subset$bic
+adjr2 <- reg_summary_subset$adjr2
+
+# Hapus nilai -Inf di BIC (hanya untuk BIC)
+bic_valid <- bic[is.finite(bic)]  # Hapus nilai Inf
+
+num_predictors <- 1:length(cp)
+
+
+par(mfrow = c(1, 3), oma = c(0, 0, 2, 0), mar = c(4, 4, 2, 1))
+
+# Plot Cp 
+cp_diff <- abs(cp - (num_predictors + 1))  
+best_cp <- which.min(cp_diff)
+plot(num_predictors, cp, type = "b", pch = 20, col = "blue",
+     xlab = "Number of Predictors", ylab = expression(C[p]),
+     main = "Cp Plot", cex.axis = 0.9, cex.lab = 1.1)
+points(best_cp, cp[best_cp], col = "red", cex = 2, pch = 4)
+text(best_cp, cp[best_cp], labels = paste("Best:", best_cp), pos = 4, col = "red", cex = 0.9)
+
+# Plot BIC
+num_predictors_bic <- 1:length(bic_valid)
+plot(num_predictors_bic, bic_valid, type = "b", pch = 20, col = "blue",
+     xlab = "Number of Predictors", ylab = "BIC", main = "BIC Plot",
+     cex.axis = 0.9, cex.lab = 1.1)
+best_bic <- which.min(bic_valid)
+points(best_bic, bic_valid[best_bic], col = "red", cex = 2, pch = 4)
+text(best_bic, bic_valid[best_bic], labels = paste("Best:", best_bic), pos = 4, col = "red", cex = 0.9)
+
+# Plot Adjusted R²
+plot(num_predictors, adjr2, type = "b", pch = 20, col = "blue",
+     xlab = "Number of Predictors", ylab = expression(Adjusted~R^2), main = "Adjusted R² Plot",
+     cex.axis = 0.9, cex.lab = 1.1)
+best_adjr2 <- which.max(adjr2)
+points(best_adjr2, adjr2[best_adjr2], col = "red", cex = 2, pch = 4)
+text(best_adjr2, adjr2[best_adjr2], labels = paste("Best:", best_adjr2), pos = 4, col = "red", cex = 0.9)
+
+# Add main title
+mtext("Best Subset Selection Model", side = 3, line = 0, cex = 1.5, outer = TRUE)
+
+```
+
+Gambar di atas menunjukan bahwa model terbaik dengan menggunakan *Best Subset Selection* berdasarkan parameter *Mallow's Cp* adalah model dengan 15 variabel, sedangkan untuk metrik BIC model terbaik diberikan oleh model dengan 14 variabel, dan dengan metrik Adjusted $R^2$ diberikan oleh model dengan 7 variabel. Dari hasil-hasil di atas dapat disimpulkan bahwa model terbaik dengan metode *Best Subset Selection* adalah model dengan 15 variabel. Hal ini disebabkan bahwa model dengan 15 variabel berdasarkan memberikan performa terbaik pada *Mallow's Cp,* performa yang setara dengan model terbaik pada metrik *Adjusted* $R^2$, serta memiliki nilai BIC yang sangat dekat dengan model dengan BIC terbaik.
+
+```{r eval=FALSE, include=FALSE}
+par(cex.axis = 0.4)         # Smaller label size
+
+plot(regfit_full, scale = 'Cp')
+
+
+plot(regfit_full, scale='bic')
+
+
+plot(regfit_full, scale = "adjr2")
+```
+
+### Koefesien Model Terbaik *Subset Selection*
+
+```{r}
+coef(regfit_full, id=15)
+```
+
+## Stepwise Forward Selection
+
+Pada tahap ini, proses pemodelan dilakukan menggunakan fungsi `subset_selection` dengan metode *forward selection* dari pustaka `leaps`. Tujuannya adalah untuk membangun model regresi yang memprediksi variabel `Premium_Amount` berdasarkan sejumlah variabel prediktor yang tersedia dalam data. Karena alur pengerjaan pada bagian ini serupa dengan langkah-langkah yang telah dijelaskan pada bagian sebelumnya, penjelasan teknis yang sama tidak akan diulang kembali.
+
+```{r}
+set.seed(888)
+regfit_fwd <- regsubsets(Premium_Amount~ ., data = train,
+nvmax = 27, method = "forward")
+summary_fwd = summary(regfit_fwd)
+```
+
+```{r}
+print(summary_fwd)
+```
+
+```{r}
+for (metric in names(summary_fwd)) {
+  if (metric != "which" && metric != "outmat" && metric != "obj") {
+    cat(metric, ":\n")
+    print(summary_fwd[[metric]])
+    cat("\n")
+  }
+}
+```
+
+```{r}
+set.seed(888)
+cp <- summary_fwd$cp
+bic <- summary_fwd$bic
+adjr2 <- summary_fwd$adjr2
+
+bic_valid <- bic[is.finite(bic)] 
+
+num_predictors <- 1:length(cp)
+
+par(mfrow = c(1, 3), oma = c(0, 0, 2, 0), mar = c(4, 4, 2, 1))  # Outer margin and plot margins
+
+# Plot Cp 
+cp_diff <- abs(cp - (num_predictors + 1))  
+best_cp <- which.min(cp_diff)
+plot(num_predictors, cp, type = "b", pch = 20, col = "blue",
+     xlab = "Number of Predictors", ylab = expression(C[p]),
+     main = "Cp Plot", cex.axis = 0.9, cex.lab = 1.1)
+points(best_cp, cp[best_cp], col = "red", cex = 2, pch = 4)
+text(best_cp, cp[best_cp], labels = paste("Best:", best_cp), pos = 4, col = "red", cex = 0.9)
+
+# Plot BIC
+
+num_predictors_bic <- 1:length(bic_valid)
+plot(num_predictors_bic, bic_valid, type = "b", pch = 20, col = "blue",
+     xlab = "Number of Predictors", ylab = "BIC", main = "BIC Plot",
+     cex.axis = 0.9, cex.lab = 1.1)
+best_bic <- which.min(bic_valid)
+points(best_bic, bic_valid[best_bic], col = "red", cex = 2, pch = 4)
+text(best_bic, bic_valid[best_bic], labels = paste("Best:", best_bic), pos = 4, col = "red", cex = 0.9)
+
+# Plot Adjusted R²
+plot(num_predictors, adjr2, type = "b", pch = 20, col = "blue",
+     xlab = "Number of Predictors", ylab = expression(Adjusted~R^2), main = "Adjusted R² Plot",
+     cex.axis = 0.9, cex.lab = 1.1)
+best_adjr2 <- which.max(adjr2)
+points(best_adjr2, adjr2[best_adjr2], col = "red", cex = 2, pch = 4)
+text(best_adjr2, adjr2[best_adjr2], labels = paste("Best:", best_adjr2), pos = 4, col = "red", cex = 0.9)
+
+# Add main title
+mtext("Forward Selection Model", side = 3, line = 0, cex = 1.5, outer = TRUE)
+```
+
+Perhatikan gambar di atas, gambar di atas menunjukan bahwa model terbaik berdasarkan mertrik *Mallow's Cp* adalah model dengan 9 variabel, berdasarkan metrik BIC adalah model dengan 7 variabel bebas, dan berdasarkan metrik *Adjusted* $R^2$ adalah model dengan 7 variabel. Maka dapat disimpulkan bahwa dengan metode *forward selection* model terbaik diberikan oleh model dengan 7 variabel karena memberikan performa terbaik berdasarkan metrik BIC dan *Adjusted* $R^2$, serta memberikan performa yang masih cukup baik pada metrik *Mallow's Cp*.
+
+```{r eval=FALSE, include=FALSE}
+par(cex.axis = 0.4)         # Smaller label size
+
+
+plot(regfit_fwd, scale = 'Cp')
+
+
+plot(regfit_fwd, scale = 'bic')
+
+
+plot(regfit_fwd, scale = 'adjr2')
+```
+
+### Koefesien Model Terbaik *Forward Selection*
+
+```{r}
+coef(regfit_fwd, id=7)
+```
+
+## Stepwise Backward Selection
+
+Pada tahap ini, proses pemodelan dilakukan menggunakan fungsi `subset_selection` dengan metode *backward selection* dari pustaka `leaps`. Tujuannya adalah untuk membangun model regresi yang memprediksi variabel `Premium_Amount` berdasarkan sejumlah variabel prediktor yang tersedia dalam data. Karena alur pengerjaan pada bagian ini serupa dengan langkah-langkah yang telah dijelaskan pada bagian sebelumnya, penjelasan teknis yang sama tidak akan diulang kembali.
+
+```{r}
+set.seed(888)
+regfit_bwd <- regsubsets(Premium_Amount~ ., data = train,
+nvmax = 27, method = "backward")
+summary_bwd <- summary(regfit_bwd)
+```
+
+```{r}
+print(summary_bwd)
+```
+
+```{r}
+for (metric in names(summary_fwd)) {
+  if (metric != "which" && metric != "outmat" && metric != "obj") {
+    cat(metric, ":\n")
+    print(summary_fwd[[metric]])
+    cat("\n")
+  }
+}
+```
+
+```{r}
+set.seed(888)
+cp <- summary_bwd$cp
+bic <- summary_bwd$bic
+adjr2 <- summary_bwd$adjr2
+
+# Hapus nilai -Inf di BIC 
+bic_valid <- bic[is.finite(bic)]  
+
+num_predictors <- 1:length(cp)
+
+
+par(mfrow = c(1, 3), oma = c(0, 0, 2, 0), mar = c(4, 4, 2, 1))  # Outer margin and 
+
+# Plot Cp 
+cp_diff <- abs(cp - (num_predictors + 1)) 
+best_cp <- which.min(cp_diff)
+plot(num_predictors, cp, type = "b", pch = 20, col = "blue",
+     xlab = "Number of Predictors", ylab = expression(C[p]),
+     main = "Cp Plot", cex.axis = 0.9, cex.lab = 1.1)
+points(best_cp, cp[best_cp], col = "red", cex = 2, pch = 4)
+text(best_cp, cp[best_cp], labels = paste("Best:", best_cp), pos = 4, col = "red", cex = 0.9)
+
+# Plot BIC
+num_predictors_bic <- 1:length(bic_valid)
+plot(num_predictors_bic, bic_valid, type = "b", pch = 20, col = "blue",
+     xlab = "Number of Predictors", ylab = "BIC", main = "BIC Plot",
+     cex.axis = 0.9, cex.lab = 1.1)
+best_bic <- which.min(bic_valid)
+points(best_bic, bic_valid[best_bic], col = "red", cex = 2, pch = 4)
+text(best_bic, bic_valid[best_bic], labels = paste("Best:", best_bic), pos = 4, col = "red", cex = 0.9)
+
+# Plot Adjusted R²
+plot(num_predictors, adjr2, type = "b", pch = 20, col = "blue",
+     xlab = "Number of Predictors", ylab = expression(Adjusted~R^2), main = "Adjusted R² Plot",
+     cex.axis = 0.9, cex.lab = 1.1)
+best_adjr2 <- which.max(adjr2)
+points(best_adjr2, adjr2[best_adjr2], col = "red", cex = 2, pch = 4)
+text(best_adjr2, adjr2[best_adjr2], labels = paste("Best:", best_adjr2), pos = 4, col = "red", cex = 0.9)
+
+# Add main title
+mtext("Backward Selection Model", side = 3, line = 0, cex = 1.5, outer = TRUE)
+```
+
+Perhatikan gambar di atas, gambar di atas menunjukan bahwa model terbaik berdasarkan mertrik *Mallow's Cp* adalah model dengan 12 variabel, berdasarkan metrik BIC adalah model dengan 11 variabel bebas, dan berdasarkan metrik Adjusted $R^2$ adalah model dengan 11 variabel. Maka dapat disimpulkan bahwa dengan metode *backward selection* model terbaik diberikan oleh model dengan 11 variabel karena memberikan performa terbaik berdasarkan metrik Cp dan *Adjusted* $R^2$, serta memberikan performa yang masih cukup baik pada metrik BIC.
+
+```{r eval=FALSE, include=FALSE}
+par(cex.axis = 0.4)         # Smaller label size
+
+plot(regfit_bwd, scale = 'Cp')
+
+plot(regfit_fwd, scale = 'adjr2')
+
+plot(regfit_fwd, scale = 'bic')
+```
+
+### Koefesien Model Terbaik Backward Selection
+
+```{r}
+coef(regfit_bwd, id=12)
+```
+
+## Overall Model Terbaik (Soal 4 - a)
+
+Pada bagian ini akan ditentukan model terbaik berdasarkan *best subset selection, forward selection,* dan *backward selection*. Hasil yang diperoleh di atas menunjukan bahwa model yang dibangun dengan metode best subset selection memperoleh hasil yang terbaik di 15 prediktor, sedangkan untuk stepwise forward di 7 prediktor, dan *stepwise backward* di 11 prediktor. Sehingga ketiga model ini akan dibangun kembali dengan variabel yang sama lalu akan diperiksa pemenuhan asumsi regresi linearnya menggunakan fungsi `check_model` pada pustaka `see` dan `performance`.
+
+```{r}
+best_subset=names(coef(regfit_full, id =15))
+print(best_subset)
+```
+
+```{r}
+best_fwd=names(coef(regfit_fwd, id=7))
+print(best_fwd)
+```
+
+```{r}
+best_bwd=names(coef(regfit_bwd, id=11))
+print(best_bwd)
+```
+
+```{r}
+model_best_subset=lm(Premium_Amount~Is_Senior+Marital_Status+Prior_Insurance+Claims_Severity+Claims_Adjustment+Safe_Driver_Discount+Bundling_Discount+Conversion_Status+Married_Premium_Discount+Prior_Insurance_Premium_Adjustment+Premium_Adjustment_Region,data=train)
+
+model_best_fwd=lm(Premium_Amount~Prior_Insurance+Claims_Severity+Safe_Driver_Discount+Bundling_Discount+Conversion_Status+Prior_Insurance_Premium_Adjustment+Premium_Adjustment_Region,data=train)
+
+model_best_bwd=lm(Premium_Amount~Marital_Status+Prior_Insurance+Claims_Frequency+Safe_Driver_Discount+Multi_Policy_Discount+Source_of_Lead+Time_Since_First_Contact+Prior_Insurance_Premium_Adjustment+Policy_Adjustment+Total_Discounts,data=train)
+
+```
+
+```{r}
+summary(model_best_subset)
+```
+
+```{r}
+summary(model_best_bwd)
+```
+
+```{r}
+summary(model_best_fwd)
+```
+
+```{r}
+calculate_metrics_test <- function(model, test_data) {
+  
+  predictions <- predict(model, newdata = test_data)
+  
+  # MAPE 
+  mape <- mean(abs((test_data$Premium_Amount - predictions) / test_data$Premium_Amount)) * 100
+  
+  # Adjusted R-squared 
+  n <- nrow(test_data)  # Number of observations in the test data
+  p <- length(coef(model)) - 1  # Number of predictors (excluding intercept)
+  sse <- sum((test_data$Premium_Amount - predictions)^2)
+  sst <- sum((test_data$Premium_Amount - mean(test_data$Premium_Amount))^2)
+  adj_r_squared <- 1 - ((1 - (sse / sst)) * (n - 1) / (n - p - 1))
+  
+  # Mallows' Cp
+  mse <- sse / (n - p)
+  cp <- (sse / mse) - (n - 2 * p)
+  
+  # BIC (Bayesian Information Criterion) 
+  bic <- BIC(model)
+  
+  return(list(MAPE = mape, Adjusted_R_Squared = adj_r_squared, Mallows_Cp = cp, BIC = bic))
+}
+
+
+metrics_best_subset_test <- calculate_metrics_test(model_best_subset, test)
+metrics_best_fwd_test <- calculate_metrics_test(model_best_fwd, test)
+metrics_best_bwd_test <- calculate_metrics_test(model_best_bwd, test)
+
+# Print 
+print("Metrics for Best Subset Model on Test Data:")
+print(metrics_best_subset_test)
+
+print("Metrics for Best Forward Model on Test Data:")
+print(metrics_best_fwd_test)
+
+print("Metrics for Best Backward Model on Test Data:")
+print(metrics_best_bwd_test)
+
+
+```
+
+Berdasarkan hasil pengujian model terhadap data *testing*, dapat disimpulkan bahwa model terbaik diperoleh dari metode *Stepwise Forward Selection*. Model ini menunjukkan kinerja yang unggul dengan nilai *adjusted* $R^2$ yang paling tinggi, nilai MAPE yang cukup kecil (sekitar 4%), nilai *Mallow's Cp* yang mendekati jumlah variabel ditambah satu (yaitu 8), serta nilai BIC yang relatif rendah, yang menunjukkan keseimbangan yang baik antara kompleksitas model dan kualitas prediksi.
+
+Selanjutnya, akan dilakukan evaluasi terhadap pemenuhan asumsi-asumsi dasar regresi linear pada model *forward selection* dengan 7 variabel prediktor. Pemeriksaan ini akan dilakukan menggunakan fungsi `check_model()` dari pustaka `see` dan `performance`.
+
+Sebagai pengingat, asumsi-asumsi dasar dalam regresi linear meliputi:
+
+1.  Linearitas: Hubungan antara variabel prediktor dan respon bersifat linear.
+
+2.  Normalitas residual: Error model (residual) terdistribusi normal.
+
+3.  Homoskedastisitas: Varians error konstan pada seluruh nilai prediktor.
+
+4.  Multikolinearitas: Variabel prediktor tidak memiliki hubungan linear yang kuat satu sama lain.
+
+5.  Independensi observasi: Setiap observasi bersifat independen.
+
+Perhatikan gambar di bawah,
+
+```{r fig.height=10, fig.width=15, message=FALSE, warning=FALSE, paged.print=FALSE}
+check_model(model_best_fwd)
+```
+
+Perhatikan bahwa, pertama, asumsi linearitas terlihat pada gambar berjudul *Linearity*. Garis referensi di grafik tersebut seharusnya datar jika hubungan antara variabel prediktor dan Premium_Amount benar-benar linear. Meskipun garisnya sedikit melengkung, secara umum pola titik-titik masih menyebar cukup merata, sehingga hubungan linear masih dapat diterima.
+
+Kedua, asumsi normalitas residual dapat dilihat dari gambar *Normality of Residuals*. Pada gambar ini, titik-titik seharusnya mengikuti garis lurus jika sisa kesalahan model (residual) mengikuti distribusi normal. Namun, tampak bahwa titik-titik menyimpang dari garis, terutama di bagian ujung (ekor). Ini menunjukkan bahwa residual tidak sepenuhnya normal, sehingga asumsi ini kurang terpenuhi.
+
+Ketiga, asumsi homoskedastisitas ditunjukkan oleh gambar *Homogeneity of Variance*. Dalam grafik ini, jika varians residual konstan, maka sebaran titik akan merata dan tidak membentuk pola tertentu. Namun pada gambar terlihat adanya pola melebar seiring naiknya fitted values, meskipun demikian pola titik-titik masih menyebar secara merata, sehingga asumsi ini bisa dianggap dipenuhi.
+
+Keempat, asumsi tidak adanya multikolinearitas ditunjukkan oleh gambar *Collinearity*. Di sini, semua variabel memiliki nilai VIF di bawah 5, artinya tidak ada hubungan yang terlalu kuat antar variabel prediktor. Maka, asumsi ini dapat dikatakan sudah terpenuhi.
+
+Kelima, asumsi independensi antar observasi tidak ditunjukkan secara langsung dalam gambar, tetapi karena data yang digunakan tidak berasal dari data berurutan seperti deret waktu atau data panel, maka asumsi ini diasumsikan terpenuhi.
+
+Sehingga secara keseluruhan, model memenuhi sebagian besar asumsi dasar regresi linear, meskipun perlu perhatian lebih terhadap normalitas dan kesamaan varians residual.
+
+# Generalized Linear Model
+
+Pada bagian ini, akan dibuat *Generalized Linear Model* (GLM) untuk memprediksi `Premium_Amount` . Di bagian ini juga akan dibandinkan performa dari model GLM tipe Poisson dan Gamma dalam memprediksi `Premium_Amount`
+
+## Regresi Poisson
+
+Pertama, akan dibentuk sebuah model regresi Poisson dengan link functionnya yaitu 'log'. Pemilihan variabel bebas untuk regresi Poisson di bawah akan menggunakan metode stepwise dengan parameter *direction* adalah *both* yang berarti bahwa model bisa ditambahkan ataupun dikurangi variabel bebas pada setiap langkahnya.
+
+```{r}
+pois_model=glm(Premium_Amount~.,data=train ,family=poisson(link='log'))
+```
+
+```{r include=FALSE}
+set.seed(888)
+step_poisson=step(pois_model,direction='both')
+```
+
+```{r}
+summary(step_poisson)
+```
+
+```{r}
+predictions_step_test = predict(step_poisson, newdata = test, type = "response")
+residuals_step_test = test$Premium_Amount - predictions_step_test
+rmse_step_test = sqrt(mean(residuals_step_test^2))
+print(rmse_step_test)
+```
+
+Nilai RMSE untuk data testing untuk model regresi Poisson adalah $5.7279$
+
+## Regresi Gamma
+
+Selanjutnya akan dibangun sebuah model regresi Gamma dengan *link function* yaitu *inverse.* Pemilihan variabel bebas juga akan menggunakan stepwise dengan parameter *direction* *both*.
+
+```{r}
+gamma_model=glm(Premium_Amount~.,data=train ,family=Gamma(link='inverse'))
+```
+
+```{r include=FALSE}
+set.seed(888)
+step_gamma=step(gamma_model,direction='both')
+```
+
+```{r}
+summary(step_gamma)
+```
+
+```{r}
+predictions_step_test = predict(step_gamma, newdata = test, type = "response")
+residuals_step_test = test$Premium_Amount - predictions_step_test
+rmse_step_test = sqrt(mean(residuals_step_test^2))
+print(rmse_step_test)
+```
+
+Nilai RMSE untuk model regresi Gamma adalah sebesar $11.5353$. Berdasarkan hasil ini, model regresi Poisson memberikan kinerja yang lebih baik dalam memprediksi `Premium_Amount`. Salah satu alasan yang mungkin adalah karena `Premium_Amount` pada data asli berbentuk bilangan bulat, sehingga lebih sesuai dimodelkan sebagai data cacah menggunakan regresi Poisson.
+
+# Cross Validation (Soal 4 - b)
+
+Pada bagian ini, digunakan fungsi `cv.glmnet` dari pustaka `glmnet` untuk melakukan *cross-validation* pada model regresi linear berganda dengan teknik regularisasi *ridge*, *lasso*, dan *elastic net*. Tujuan dari penerapan *cross-validation* dan regularisasi ini adalah untuk menghindari terjadinya *overfitting* pada data pelatihan, sehingga model yang dihasilkan dapat melakukan generalisasi dengan lebih baik saat diterapkan pada data baru.
+
+## Ridge Cross Validation
+
+Pada bagian ini akan digunakan teknik regularisasi *ridge* pada model regresi linear berganda. Teknik regularisasi *ridge* akan memberikan penalti sebesar $\lambda$ terhadap sebuah parameter jika nilai parameter tersebut terlalu besar, akibatnya nilai dari parameter yang tidak signifikan akan menjadi sangat kecil hingga mendekati $0$. Untuk menerapkan teknik regularisasi *ridge*, pertama data akan dibentuk sebagai sebuah matriks karena fungsi `cv.glmnet` hanya bisa menerima parameter berupa matriks. Setelah itu akan dilakukan latih dengan jumlah parameter *fold*nya adalah 5.
+
+```{r}
+x_train = model.matrix(Premium_Amount~., data=train)[,-1] 
+y_train = train$Premium_Amount 
+x_test = model.matrix(Premium_Amount~., data=test)[,-1] 
+y_test = test$Premium_Amount 
+grid = 10^seq(-2,10, length=100)
+```
+
+```{r}
+cv_ridge = cv.glmnet(x_train,y_train, alpha=0, nfolds=5, lambda=grid, type.measure='mse')
+```
+
+```{r}
+plot(cv_ridge)
+```
+
+Gambar di atas menunjukan nilai MSE dari masing-masing model regresi linear berganda dengan teknik regularisasi *ridge* pada $\lambda$ yang berbeda-beda.
+
+```{r}
+lambda_ridge = cv_ridge$lambda.min 
+rmse_ridge = min(sqrt(cv_ridge$cvm))  
+print(paste('Nilai Lambda Terbaik:', lambda_ridge)) 
+print(paste('Nilai RMSE Terbaik:', rmse_ridge))
+```
+
+Berdasarkan hasil di atas nilai lambda terbaik berada $\lambda=0.01$ dengan nilai RMSEnya pada data latih adalah $0.02298$ .
+
+```{r}
+ridge = glmnet(x_train, y_train, alpha=0, lambda=grid)  
+ridge_pred = predict(ridge, s=lambda_ridge, newx = x_test) 
+rmse_pred = sqrt(mean(ridge_pred - y_test)^2)  
+print(paste('Nilai RMSE data testing',rmse_pred))
+```
+
+Nilai RMSE pada data uji dari model regresi linear berganda dengan teknik regularisasi *ridge* adalah $0.0010$ yang lebih kecil dari nilai RMSE dari data testing. Hal ini tentu masuk akal karena tujuan dari teknik regularisasi adalah memastikan bahwa model bisa menyesuaikan dengan lebih baik pada data uji.
+
+```{r}
+best_coef = coef(ridge, s = lambda_ridge) 
+print(best_coef) 
+plot(ridge)
+```
+
+## Lasso Regularization
+
+Pada bagian ini akan diterapkan teknik regularisasi *lasso* pada model regresi linear berganda. Sama seperti Ridge, tujuan utama dari *lasso* adalah untuk mencegah *overfitting* dan meningkatkan kemampuan generalisasi model. Namun, keunggulan [*lasso*]{.underline} terletak pada kemampuannya untuk menyusutkan koefisien variabel yang kurang penting hingga menjadi nol, sehingga secara otomatis melakukan seleksi variabel dalam proses pemodelan.
+
+```{r}
+cv_lasso = cv.glmnet(x_train,y_train,alpha=1, 
+,nfolds=5,lambda = grid,type.measure='mse')
+```
+
+```{r}
+plot(cv_lasso)
+```
+
+```{r}
+lambda_lasso = cv_lasso$lambda.min 
+rmse_lasso = min(sqrt(cv_lasso$cvm))  
+print(paste('Nilai Lambda Terbaik:', lambda_lasso)) 
+print(paste('Nilai RMSE Terbaik:', rmse_lasso))
+```
+
+Nilai lambda terbaik untuk teknik regularisasi *lasso* adalah $0.01$ dengan nilai RMSEnya pada data latih berupa $0.02672$.
+
+```{r}
+lasso = glmnet(x_train, y_train, alpha=1, lambda=grid)  
+lasso_pred = predict(lasso , s=lambda_lasso, newx = x_test) 
+rmse_pred = sqrt(mean(lasso_pred - y_test)^2)  
+print(rmse_pred)
+```
+
+Nilai RMSE dari model regresi linear berganda dengan teknik regularisasi *lasso* adalah $0.0004907$.
+
+```{r}
+best_coef = coef(lasso, s = lambda_lasso)
+lasso.coef = predict(lasso, type='coefficients',s= lambda_lasso)
+print(best_coef) 
+plot(lasso)
+```
+
+Perhatikan bahwa hasil di atas menunjukan dari 27 variabel yang ada untuk memprediksi `Premium_Amount` hanya ada sekitar 13 variabel yang signifikan dengan variabel lainnya dianggap tidak signifikan karena nilai dari parameternya adalah $0$.
+
+## Elastic Net Regularization
+
+Pada bagian ini akan diterapkan teknik regularisasi *elastic net* pada model regresi linear berganda. *Elastic net* merupakan kasus gabungan dan juga perumuman dari teknik regularisasi *ridge* dan *lasso*. Teknik regularisasi ini menggabungkan *ridge* dan *lasso* dengan harapan bahwa variabel yang tidak signifikan masih akan diberi nilai $0$.
+
+```{r}
+cv_el = cv.glmnet(x_train,y_train,alpha=0.5,nfolds=5,lambda = grid, type.measure='mse')
+```
+
+```{r}
+plot(cv_el)
+```
+
+```{r}
+lambda_el = cv_el$lambda.min 
+rmse_el = min(sqrt(cv_el$cvm))  
+print(paste('Nilai Lambda Terbaik:', lambda_el)) 
+print(paste('Nilai RMSE Terbaik:', rmse_el))
+```
+
+Nilai lambda terbaik untuk model regresi linear berganda dengan teknik regularisasi *elastic net* adalah $0.01$ dengan nilai RMSEnya untuk data latih adalah $0.0195$.
+
+```{r}
+el = glmnet(x_train, y_train, alpha=0.5, lambda=grid)  
+el_pred = predict(el , s=lambda_el, newx = x_test)  
+rmse_pred = sqrt(mean(el_pred - y_test)^2)  
+print(rmse_pred)
+```
+
+Nilai RMSE dari model regresi linear berganda dengan teknik regularisasi *elastic net* pada data uji adalah $0.00058$
+
+```{r}
+best_coef = coef(el, s = lambda_el) 
+print(best_coef) 
+plot(el)
+```
+
+Dari 27 variabel yang ada, model regresi linear berganda dengan teknik regularisasi *elastic net* memilih 14 variabel dengan pengaruh yang signifikan dengan 13 variabel dianggap tidak signifikan karena memiliki nilai parameter $0$.
+
+## Model terbaik berdasarkan `cv.glmnet` (Soal 4 - b)
+
+Secara keseluruhan model regresi linear berganda dengan teknik regularisasi *lasso* memberikan performa yang paling baik dengan nilai RMSEnya untuk data testing yang paling rendah, yaitu $0.0004907$. Dari model tersebut variabel yang berpengaruh signifikan atau bisa dibilang terpilih ke dalam model meliputi `Marital_Status_Married`, `Married_Premium_Discount`,`Prior_Insurance_Premium_Adjustment`, `Claims__Adjustment`, `Policy_TypeLiability-Only`, `Policy_Adjustment`, dan `Total_Discounts` .
+
+\## Interpretasi Model (Soal 4 - c)
+
+Pada poin (a), kita sudah berhasil membangun sebuah model menggunakan *stepwise* dan menentukan bahwa model dengan stepwise *forward selection* merupakan model yang paling baik dengan modelnya adalah
+
+$$
+  \begin{aligned}
+  \widehat{\text{Premium\_Amount}} &= 2274.94 \\
+  &+ (-96.85) \cdot \text{Prior\_Insurance>5\_years} \\
+  &+ (-56.93) \cdot \text{Prior\_Insurance1--5\_years} \\
+  &+ (-46.80) \cdot \text{Claims\_Severity\_Low} \\
+  &+ (-19.01) \cdot \text{Claims\_Severity\_Medium} \\
+  &+ (-46.75) \cdot \text{Safe\_Driver\_Discount} \\
+  &+ (-54.99) \cdot \text{Bundling\_Discount} \\
+  &+ (-22.57) \cdot \text{Conversion\_Status} \\
+  &+ 0.97 \cdot \text{Premium\_Adjustment\_Region}
+  \end{aligned}
+  $$
+
+Dari model tersebut kita dapat menginterpretasikan bahwa,
+
+1.  Model memiliki nilai `intercept` yang tinggi yang mengindikasikan bahwa sebelum dipengaruhi oleh variabel apapun nilai premi adalah $2274.94$
+2.  Koefisien untuk `Prior_Insurance`\>5 years adalah $-96.85$, yang menunjukkan bahwa jika seseorang memiliki asuransi sebelumnya lebih dari 5 tahun, nilai premi akan lebih rendah sebesar $96.85$ dibandingkan dengan orang yang tidak memiliki asuransi sebelumnya
+3.  Koefisien untuk `Prior_Insurance1-5 years` adalah $-56.93$, yang berarti bahwa jika seseorang memiliki asuransi sebelumnya selama 1-5 tahun, nilai premi mereka akan lebih rendah sebesar $56.93$ dibandingkan dengan orang yang tidak memiliki asuransi sebelumnya.
+4.  Koefisien untuk `Claims_SeverityLow` adalah $-46.80$, yang berarti bahwa jika tingkat keparahan klaim dikategorikan sebagai Low (rendah), maka nilai premi akan lebih rendah sebesar $46.80$dibandingkan dengan mereka yang memiliki tingkat keparahan klaim yang lebih tinggi.
+5.  Koefisien untuk `Claims_SeverityMedium` adalah $-19.01$, yang menunjukkan bahwa jika tingkat keparahan klaim dikategorikan sebagai Medium (sedang), nilai premi akan lebih rendah sebesar $19.01$ dibandingkan dengan pelanggan yang memiliki klaim dengan tingkat keparahan tinggi.
+6.  Koefisien untuk `Safe_Driver_Discount` adalah $-46.75$, yang berarti bahwa pelanggan yang memiliki memiliki historis mengemudi dengan lebih aman akan membayar premi yang lebih rendah sebesar $46.75$.
+7.  Koefisien untuk `Bundling_Discount`adalah $-54.99$, yang menunjukkan bahwa pelanggan yang mendapatkan diskon bundling (misalnya, menggabungkan beberapa polis asuransi) akan membayar premi yang lebih rendah sebesar $54.99$.
+8.  Koefisien untuk `Conversion_Status` adalah $-22.57$, yang berarti bahwa jika status konversi pelanggan adalah positif (misalnya, mereka beralih dari calon pelanggan menjadi pelanggan yang aktif), nilai premi akan lebih rendah sebesar $22.57$.
+9.  Koefisien untuk `Premium_Adjustment_Region` adalah $0.97$, yang menunjukkan bahwa setiap perubahan satu unit dalam variabel Premium_Adjustment_Region (misalnya perubahan dalam lokasi atau wilayah) akan mengubah nilai premi sebesar $0.97$.
+
+Pada poin (b) telah ditentukan juga bahwa model regresi linear berganda dengan regularisasi *lasso* merupakan model terbaik dengan modelnya adalah
+
+$$
+  \begin{aligned} 
+  \widehat{\text{Premium\_Amount}} &= 2150.03 \\
+  &+ 85.98 \cdot \text{Marital\_Status\_Married} \\
+  &+ 2.92 \times 10^{-12} \cdot \text{Married\_Premium\_Discount} \\
+  &+ 0.9997 \cdot \text{Prior\_Insurance\_Premium\_Adjustment} \\
+  &+ 0.9998 \cdot \text{Claims\_Adjustment} \\
+  &- 199.86 \cdot \text{Policy\_Type\_LiabilityOnly} \\
+  &+ 5.85 \times 10^{-4} \cdot \text{Policy\_Adjustment} \\
+  &- 0.9997 \cdot \text{Total\_Discounts} \\
+  &+ 0.9998 \cdot \text{Premium\_Adjustment\_Credit} \\
+  &+ 0.0077 \cdot \text{Region\_Urban} \\
+  &+ 0.9997 \cdot \text{Premium\_Adjustment\_Region}
+  \end{aligned}
+  $$
+
+Dari model tersebut kita dapat menginterpretasikan bahwa:
+
+1.  Model memiliki `intercept` sebesar $2150.03$, yang menunjukkan bahwa jika semua variabel prediktor bernilai nol, maka nilai awal dari premi yang diprediksi adalah $2150.03$.
+
+2.  `Marital_StatusMarried` memiliki koefisien sebesar $85.98$, yang berarti bahwa pelanggan yang sudah menikah cenderung membayar premi lebih tinggi sebesar $85.98$ dibandingkan dengan kategori dasar (baseline) status pernikahan.
+
+3.  `Married_Premium_Discount` memiliki pengaruh sangat kecil sebesar $2.92 \times 10^{-12}$, yang secara praktis dapat dianggap tidak berdampak signifikan terhadap nilai premi.
+
+4.  `Prior_Insurance_Premium_Adjustment` berkontribusi sebesar $0.9997$, menunjukkan bahwa setiap kenaikan satu unit dalam penyesuaian premi berdasarkan asuransi sebelumnya akan meningkatkan premi sebesar $0.9997$.
+
+5.  `Claims_Adjustment` memiliki koefisien sebesar $0.9998$, menunjukkan bahwa setiap satu unit perubahan dalam penyesuaian klaim akan meningkatkan premi sebesar $0.9998$.
+
+6.  `Policy_TypeLiability-Only` memiliki koefisien negatif sebesar $-199.86$, yang berarti bahwa pelanggan dengan polis tipe "Liability-Only" membayar premi yang lebih rendah sebesar $199.86$ dibandingkan dengan tipe polis lainnya.
+
+7.  `Policy_Adjustment` memiliki dampak kecil sebesar $0.000585$, artinya setiap satu unit perubahan dalam penyesuaian polis meningkatkan premi sebesar angka yang sangat kecil ini.
+
+8.  `Total_Discounts` memiliki koefisien negatif $-0.9997$, yang berarti bahwa setiap kenaikan satu unit dalam total diskon akan menurunkan premi sebesar $0.9997$.
+
+9.  `Premium_Adjustment_Credit` memiliki nilai koefisien sebesar $0.9998$, yang berarti peningkatan satu unit dalam penyesuaian premi berdasarkan skor kredit akan meningkatkan premi sebesar $0.9998$.
+
+10. `RegionUrban` memiliki koefisien sebesar $0.0077$, yang berarti bahwa tinggal di daerah urban akan menambah premi sekitar $0.0077$ dibandingkan wilayah referensi (misalnya rural), namun dampaknya sangat kecil.
+
+11. `Premium_Adjustment_Region` memiliki koefisien $0.9997$, yang berarti setiap kenaikan satu unit pada penyesuaian premi berbasis wilayah akan meningkatkan premi sebesar $0.9997$.
+
+    ## Penjelasan ke Divisi Finance (Soal 4 - d)
+
+    **1. Tujuan**\
+    Membuat model untuk **memperkirakan besarnya premi asuransi** yang akan dibayar oleh pelanggan berdasarkan informasi dan karakteristik mereka, seperti lama punya asuransi sebelumnya, status pernikahan, jenis polis, dan sebagainya. Tujuan utamanya adalah untuk membuat prediksi dan mengenali karakteristik ataupun profil-profil nasabah yang membayar premi mahal ataupun murah.
+
+    **2. Pendekatan Model Terbaik**
+
+    -   **Model *Stepwise (Forward Selection)****:*
+
+        Model tipe ini memulai dengan model yang paling sederhana kemudian menambah faktor-faktor lain yang mungkin dapat mempengaruhi jumlah premi.
+
+        Interpretasi :
+
+        Secara sederhana, model ini mengatakan:
+
+        Premi dasar seseorang dimulai dari \$2,274.94.
+
+        Kemudian, premi itu akan turun atau naik tergantung karakteristik pelanggan, seperti:
+
+        -   Pernah punya asuransi sebelumnya selama lebih dari 5 tahun : premi turun sekitar \$96.85.
+
+        -   Pernah punya asuransi 1--5 tahun : premi turun \$56.93.
+
+        -   Klaim yang dibuat tergolong ringan (*low severity*) : premi turun \$46.80.
+
+        -   Klaim tergolong sedang (i) : premi turun \$19.01.
+
+        -   Pelanggan punya riwayat mengemudi aman (dapat diskon aman berkendara) : premi turun \$46.75.
+
+        -   Menggabungkan beberapa produk asuransi (*bundling*) : premi turun \$54.99.
+
+        -   Statusnya sudah berubah dari calon pelanggan menjadi pelanggan aktif →:premi turun \$22.57.
+
+        -   Tinggal di wilayah tertentu (Premium_Adjustment_Region) : setiap perubahan di wilayah akan menambah atau mengurangi premi sekitar 0.97.
+
+    -   Model *Lasso Regression* (dengan Regularisasi):
+
+        Model ini mempertimbangkan seluruh faktor namun pada akhirnya mengabaikan faktor-faktor yang tidak signifikan terhadap jumlah premi.
+
+        Interpretasi :
+
+        Premi dasar dimulai dari \$2,150.03, lalu akan berubah tergantung hal-hal seperti:
+
+        -   Status menikah : premi naik \$85.98.
+
+        -   Punya asuransi sebelumnya : semakin tinggi penyesuaian, premi naik sekitar \$0.9997 per unit.
+
+        -   Penyesuaian karena riwayat klaim : menambah premi sekitar \$0.9998 per unit.
+
+        -   Jika hanya punya polis tanggungan (*liability-only*) →:premi lebih murah \$199.86.
+
+        -   Total diskon yang diterima : setiap tambahan diskon 1 unit, premi turun hampir \$1
+
+        -   Skor kredit pelanggan (*credit-based adjustment*) : semakin tinggi, premi naik sekitar \$0.9998 per unit.
+
+        -   Tinggal di wilayah urban : sedikit menaikkan premi sekitar \$0.0077 (sangat kecil).
+
+        -   Wilayah tempat tinggal (*regional adjustment*) : menambah premi sekitar \$0.9997 per unit perubahan wilayah.
+
+    3.  **Rekomendasi Untuk Tim Finance**
+
+    -   Optimalkan Program Diskon: Diskon seperti `Safe Driver`, `Bundling`, atau `Total Discounts` memang menurunkan premi dan mungkin membuat lebih banyak pelanggan tertarik untuk mengikuti asuransi, tapi perlu dihitung kembali dampak totalnya terhadap pendapatan premi keseluruhan.
+
+    -   Segmentasi Pelanggan Lebih Baik: Pelanggan dengan polis `Liability Only` atau yang tinggal di daerah tertentu cenderung membayar lebih rendah. Ini dapat menjadi dasar untuk up-sell produk tambahan untuk pelanggan-pelanggan yang masuk ke dalam kategori tersebut.
+
+    -   Gunakan Penyesuaian Premium secara Dinamis: Variabel seperti `Claims_Adjustment` dan `Premium_Adjustment_Credit` menunjukkan bahwa premi dapat disesuaikan secara proporsional sesuai risiko nyata pelanggan.
+
+# Soal 5 - Rangkuman, Prediksi Hasil Pemodelan, dan Business Insight
+
+Pada soal nomor 2 dan 3 telah dibuah tiga model klasifikasi yaitu *decision tree, random forest*, dan *Gradient Boosting Machine (GBM)*, dari ketiga model tersebut telah diperoleh bahwa model terbaiknya adalah *Gradient Boosting Machine (GBM)*. Berdasarkan model klasifikasi terbaik tersebut, nasabah yang berpotensi memiliki premi tinggi paling dipengaruhi oleh jenis polis, status pernikahan, wilayah tempat tinggal, dan skor kredit. Nasabah dengan jenis polis *"Full Coverage"* memiliki peluang yang besar untuk masuk dalam kelompok nasabah dengan premi tinggi dibandingkan jenis polis lainnya. Selain itu, mayoritas nasabah yang memiliki premi tinggi berasal dari daerah "*Urban*", artinya daerah ini memiliki potensi yang besar dalam pasar asuransi. Skor kredit seorang nasabah juga berpengaruh pada premi nasabah, di mana semakin rendah kredit skor seorang nasabah maka kemungkinan premi nasabah tersebut akan semakin besar. Di sisi lain, meskipun untuk nasabah dengan status pernikahan "*Married*" mendapatkan diskon premi, namun data menunjukkan bahwa mayoritas nasabah dengan premi tinggi justru berasal dari kelompok nasabah ini, yang berarti diskon tersebut belum cukup menurunkan total premi nasabah tersebut menjadi rendah.
+
+Dari informasi ini, strategi seleksi pelanggan dapat difokuskan pada promosi produk "*Full Coverage*" untuk individu yang tinggal di daerah *urban* dan memiliki skor kredit yang menegah ke bawah. Selain itu, perusahaan juga dapat tetap menjual produk pada nasabah yang memiliki status "*Married*", karena kelompok ini tetap memberikan kontribusi pada pendapatan dari premi. Profit perusahaan dari pendapatan premi tentunya akan meningkat jika perusahaan dapat mengidentifikasi dan menargetkan kelompok nasabah yang cenderung menghasilkan premi tinggi. Di sisi lain, model ini juga dapat membantu perusahaan untuk menghindari kesalahan dalam penetapan harga, sehingga potensi kerugian atau peluang keuntungan yang terlewat dapat dikurangi.
+
+Selanjutnya akan diambil 15 observasi baru dari data test secara acak. Di mana kategori `Premium Class`nya diambil dari hasil prediksi model pohon terbaik yang telah dipilih.
+
+```{r}
+set.seed(123)
+# Ambil indeks untuk Premium_Class == "High"
+high_index <- which(test_data$Premium_Class == "High")
+new_high <- sample(high_index, 10)
+
+# Ambil indeks untuk Premium_Class == "Low"
+low_index <- which(test_data$Premium_Class == "Low")
+new_low <- sample(low_index, 5)
+
+# Gabungkan indeks test
+new_index <- c(new_high, new_low)
+
+# Buat data baru
+new_obs <- test_data[new_index, ]
+new_obs[] <- lapply(new_obs, function(x) {
+  if (is.character(x)) as.factor(x) else x
+})
+```
+
+```{r}
+# Bangun model GBM terbaik
+best_gbm_model <- gbm(Premium_Class ~ ., data = train_biner,
+                 distribution = "bernoulli",
+                 n.trees = 2000, interaction.depth = 1, n.minobsinnode=30,
+                 shrinkage = 0.1, verbose = FALSE)
+
+# Mengambil Output dari prediksi model GBM terbaik
+gbm_prob <- predict(best_gbm_model, newdata = new_obs)
+gbm_pred <- ifelse(gbm_prob > 0.5, "High", "Low")
+new_obs$Premium_Class <- factor(gbm_pred, levels = c("High", "Low"))
+```
+
+Setelah itu, akan dibangun model regresi logistik untuk memprediksi *premium class* dari 15 observasi baru yang telah dibentuk.
+
+```{r}
+#Modeling Logistic Regression untuk melakukan prediksi
+model_logit <- glm(Premium_Class ~., data = train_data, family = binomial(link = "logit"))
+summary(model_logit)
+```
+
+```{r}
+# Prediksi Premium Class dengan Logistic Regression
+slr.prob <- predict(model_logit, new_obs, type="response") #Low
+slr.pred <- ifelse(slr.prob > 0.5, "Low", "High")
+actual <- factor(new_obs$Premium_Class, levels = c("High", "Low"))
+predicted <- factor(slr.pred, levels = c("High", "Low"))
+
+confusionMatrix(predicted, actual)
+```
+
+Setelah diperoleh hasil prediksinya, akan digunakan formula dari divisi *finance* untuk menghitung nilai keuntungan dari hasil prediksi observasi baru tersebut.
+
+```{r}
+# Fungsi hitung keuntungan per observasi
+profit_score <- mapply(function(act, pred) {
+  if (act == "High" && pred == "High") {
+    return(50)   # Benar prediksi High
+  } else if (act == "High" && pred == "Low") {
+    return(-15)  # Salah prediksi High jadi Low
+  } else if (act == "Low" && pred == "Low") {
+    return(-5)   # Benar prediksi Low
+  } else if (act == "Low" && pred == "High") {
+    return(-25)  # Salah prediksi Low jadi High
+  }
+}, act = actual, pred = predicted)
+
+# Lihat hasil
+print(paste('Total nilai keuntungan=', sum(profit_score)))
+```
+
+Perhatikan bahwa, dengan menggunakan *threshold* sebesar 50% diperoleh nilai keuntungan sebesar 475. Pada *threshold* 50%, model regresi logistik memiliki akurasi sebesar 1 sehingga 475 merupakan nilai keuntungan maksimum yang bisa diperoleh untuk 15 observasi baru yang telah dibentuk.
